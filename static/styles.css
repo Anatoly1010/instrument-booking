@@ -76,7 +76,9 @@ h1, h2, p { margin: 0; }
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 8px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 8px;
   border: 1px solid transparent;
   border-radius: 7px;
   background: white;
@@ -89,7 +91,9 @@ h1, h2, p { margin: 0; }
 .instrument:hover { background: var(--background); }
 .instrument[aria-pressed="true"] { background: var(--highlight); color: var(--masthead); border-color: #d0e5d4; font-weight: 650; }
 .all-instruments { font-weight: 650; }
-.swatch { flex: 0 0 10px; height: 10px; border-radius: 3px; background: hsl(var(--hue) 54% 39%); }
+.swatch, .event, .month-event, .overview-booking { --instrument-accent: hsl(var(--hue) 75% 29%); }
+.swatch { flex: 0 0 12px; height: 12px; border-radius: 3px; background: var(--instrument-accent); }
+.instrument-name, .overview-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .add-instrument { margin-top: 10px; width: 100%; color: var(--accent); }
 
 .calendar-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin: 0 0 20px; }
@@ -169,7 +173,7 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
   overflow: hidden;
   padding: 0 4px;
   border: 1px solid hsl(var(--hue) 46% 75%);
-  border-left: 3px solid hsl(var(--hue) 54% 38%);
+  border-left: 3px solid var(--instrument-accent);
   border-radius: 5px;
   background: hsl(var(--hue) 63% 91%);
   color: hsl(var(--hue) 52% 22%);
@@ -192,13 +196,14 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
 .month-headings { position: sticky; top: 0; z-index: 3; }
 .month-headings .date-heading { text-transform: capitalize; }
 .month-headings .date-heading:first-child { border-left: 0; }
+.month-grid { --month-cell-height: 126px; }
 .month-cell {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 3px;
   min-width: 0;
-  min-height: 126px;
+  min-height: var(--month-cell-height);
   padding: 5px;
   border-bottom: 1px solid var(--line);
   border-right: 1px solid var(--line);
@@ -226,7 +231,7 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
   gap: 0;
   padding: 2px 4px;
   border: 1px solid hsl(var(--hue) 46% 75%);
-  border-left: 3px solid hsl(var(--hue) 54% 38%);
+  border-left: 3px solid var(--instrument-accent);
   border-radius: 5px;
   background: hsl(var(--hue) 63% 91%);
   color: hsl(var(--hue) 52% 22%);
@@ -237,6 +242,30 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
 .month-event:hover { background: hsl(var(--hue) 62% 86%); }
 .month-event strong { overflow-wrap: anywhere; }
 .month-event-time { font-size: .75rem; font-variant-numeric: tabular-nums; }
+
+.month-overview .month-cell { height: var(--month-cell-height); gap: 0; padding: 3px; }
+.month-overview .month-date { height: 20px; flex: 0 0 20px; }
+.overview-bookings { flex: 1; min-height: 0; overflow: auto; }
+.overview-booking {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  height: .875rem;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 3px;
+  background: var(--instrument-accent);
+  color: white;
+  font-size: .75rem;
+  line-height: 1;
+  text-align: left;
+}
+.overview-booking:hover { background: hsl(var(--hue) 75% 24%); }
+.overview-booking:focus-visible { outline: 1px solid white; outline-offset: -2px; }
+.overview-count { flex: 0 0 auto; font-weight: 650; font-variant-numeric: tabular-nums; }
 
 .empty {
   display: grid;
@@ -268,6 +297,9 @@ dialog::backdrop { background: #193b2a80; }
 dialog form { display: grid; gap: 13px; }
 .dialog-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .dialog-header h2 { font-size: 1.34rem; }
+#day-bookings-title { overflow-wrap: anywhere; }
+.day-bookings-list { display: grid; gap: 6px; margin-top: 12px; }
+.day-booking { text-align: left; overflow-wrap: anywhere; }
 .close { border-color: transparent; }
 label { display: grid; gap: 5px; font-size: .94rem; font-weight: 600; }
 input, select, textarea {

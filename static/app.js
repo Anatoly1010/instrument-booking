@@ -7,6 +7,7 @@ const instrumentDialog = $("#instrument-dialog");
 const instrumentForm = $("#instrument-form");
 const instrumentName = instrumentForm.elements.namedItem("name");
 const renameInstrument = $("#rename-instrument");
+const dayBookingsDialog = $("#day-bookings-dialog");
 const bookingDialog = $("#booking-dialog");
 const bookingForm = $("#booking-form");
 const deleteButton = $("#delete-booking");
@@ -14,7 +15,7 @@ const weekdayFormat = new Intl.DateTimeFormat("ru", { weekday: "short" });
 const dayFormat = new Intl.DateTimeFormat("ru", { dateStyle: "full" });
 const rangeFormat = new Intl.DateTimeFormat("ru", { day: "numeric", month: "long", year: "numeric" });
 const monthFormat = new Intl.DateTimeFormat("ru", { month: "long", year: "numeric" });
-const hues = [138, 173, 270, 24, 330, 47, 205];
+const hues = [145, 183, 268, 23, 332, 45, 216];
 
 const state = {
   date: new Date(),
@@ -107,10 +108,11 @@ function renderInstruments() {
     const button = element("button", "instrument");
     button.type = "button";
     button.dataset.id = instrument.id;
+    button.title = instrument.name;
     const swatch = element("span", "swatch");
     swatch.setAttribute("aria-hidden", "true");
     swatch.style.setProperty("--hue", instrumentColor(instrument.id));
-    button.append(swatch, element("span", "", instrument.name));
+    button.append(swatch, element("span", "instrument-name", instrument.name));
     return button;
   });
   if (items.length) {
@@ -215,11 +217,70 @@ function renderTimeGrid(days, bookings) {
   calendar.replaceChildren(headings, grid);
 }
 
+function renderMonthEvent(booking, day, nextDay, name) {
+  const label = daySegment(booking, day, nextDay).label;
+  const event = element("button", "month-event");
+  event.type = "button";
+  event.dataset.booking = booking.id;
+  event.style.setProperty("--hue", instrumentColor(booking.instrument_id));
+  event.title = `${label} · ${name} · ${booking.person}`;
+  event.setAttribute("aria-label", `${label}, ${name}, ${booking.person}. Открыть бронь`);
+  event.append(element("span", "month-event-time", label), element("strong", "", booking.person));
+  return event;
+}
+
+function openDayBookings(name, day, nextDay, bookings) {
+  $("#day-bookings-title").textContent = name;
+  $("#day-bookings-date").textContent = dayFormat.format(fromKey(day));
+  const entries = bookings.map((booking) => {
+    const label = daySegment(booking, day, nextDay).label;
+    const item = element("button", "button day-booking", `${label} · ${booking.person}`);
+    item.type = "button";
+    item.addEventListener("click", () => {
+      dayBookingsDialog.close();
+      openBookingForm(booking);
+    });
+    return item;
+  });
+  $("#day-bookings-list").replaceChildren(...entries);
+  dayBookingsDialog.showModal();
+}
+
+function renderMonthOverviewCell(bookings, day, nextDay) {
+  const list = element("div", "overview-bookings");
+  const groups = new Map();
+  for (const booking of bookings) {
+    const group = groups.get(booking.instrument_id) ?? [];
+    group.push(booking);
+    groups.set(booking.instrument_id, group);
+  }
+  for (const { id, name } of state.instruments) {
+    const group = groups.get(id);
+    if (!group) continue;
+    const times = group.map((booking) => daySegment(booking, day, nextDay).label).join(", ");
+    const item = element("button", "overview-booking");
+    item.type = "button";
+    item.style.setProperty("--hue", instrumentColor(id));
+    item.title = `${name}\n${times}`;
+    const action = group.length === 1 ? "Открыть бронь" : "Открыть список броней";
+    item.setAttribute("aria-label", `${name}. ${times}. ${action}`);
+    item.append(element("span", "overview-name", name));
+    if (group.length === 1) {
+      item.dataset.booking = group[0].id;
+    } else {
+      item.append(element("span", "overview-count", String(group.length)));
+      item.addEventListener("click", () => openDayBookings(name, day, nextDay, group));
+    }
+    list.append(item);
+  }
+  return list;
+}
+
 function renderMonth(days, bookings) {
   const headings = element("div", "month-headings");
-  const grid = element("div", "month-grid");
+  const grid = element("div", state.allInstruments ? "month-grid month-overview" : "month-grid");
   const today = dateKey(new Date());
-  const names = new Map(state.instruments.map(({ id, name }) => [id, name]));
+  const instrument = state.instruments.find(({ id }) => id === state.activeId);
   const offset = mondayOffset(days[0]);
   const monday = addDays(days[0], -offset);
   for (let index = 0; index < 7; index += 1) {
@@ -244,17 +305,13 @@ function renderMonth(days, bookings) {
     dayButton.dataset.start = `${day}T09:00`;
     dayButton.setAttribute("aria-label", `${dayFormat.format(date)}. Создать бронь`);
     cell.append(dayButton);
-    for (const booking of bookingsOnDay(bookings, day, nextDay)) {
-      const name = names.get(booking.instrument_id);
-      const label = daySegment(booking, day, nextDay).label;
-      const event = element("button", "month-event");
-      event.type = "button";
-      event.dataset.booking = booking.id;
-      event.style.setProperty("--hue", instrumentColor(booking.instrument_id));
-      event.title = `${label} · ${name} · ${booking.person}`;
-      event.setAttribute("aria-label", `${label}, ${name}, ${booking.person}. Открыть бронь`);
-      event.append(element("span", "month-event-time", label), element("strong", "", state.allInstruments ? name : booking.person));
-      cell.append(event);
+    const entries = bookingsOnDay(bookings, day, nextDay);
+    if (state.allInstruments) {
+      cell.append(renderMonthOverviewCell(entries, day, nextDay));
+    } else {
+      for (const booking of entries) {
+        cell.append(renderMonthEvent(booking, day, nextDay, instrument.name));
+      }
     }
     grid.append(cell);
   }
@@ -417,7 +474,7 @@ for (const dialog of document.querySelectorAll("dialog")) {
     button.addEventListener("click", () => dialog.close());
   }
   dialog.addEventListener("cancel", (event) => {
-    if (dialog.querySelector("form").dataset.pending) event.preventDefault();
+    if (dialog.querySelector("form")?.dataset.pending) event.preventDefault();
   });
 }
 
