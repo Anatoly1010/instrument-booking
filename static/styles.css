@@ -91,7 +91,7 @@ h1, h2, p { margin: 0; }
 .instrument:hover { background: var(--background); }
 .instrument[aria-pressed="true"] { background: var(--highlight); color: var(--masthead); border-color: #d0e5d4; font-weight: 650; }
 .all-instruments { font-weight: 650; }
-.swatch, .event, .month-event, .overview-booking { --instrument-accent: hsl(var(--hue) 75% 29%); }
+.swatch, .event { --instrument-accent: hsl(var(--hue) 75% 29%); }
 .swatch { flex: 0 0 12px; height: 12px; border-radius: 3px; background: var(--instrument-accent); }
 .instrument-name, .overview-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .add-instrument { margin-top: 10px; width: 100%; color: var(--accent); }
@@ -189,7 +189,8 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
 .event.compact strong { display: block; }
 .event.compact span { display: none; }
 
-.month-headings, .month-grid {
+.month-grid { min-width: 728px; --month-cell-height: 126px; }
+.month-headings, .month-week, .month-bars {
   display: grid;
   grid-template-columns: repeat(7, minmax(104px, 1fr));
   min-width: 728px;
@@ -197,15 +198,14 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
 .month-headings { position: sticky; top: 0; z-index: 3; }
 .month-headings .date-heading { text-transform: capitalize; }
 .month-headings .date-heading:first-child { border-left: 0; }
-.month-grid { --month-cell-height: 126px; }
+.month-week { position: relative; grid-template-rows: var(--month-cell-height); }
 .month-cell {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 3px;
   min-width: 0;
-  min-height: var(--month-cell-height);
-  padding: 5px;
+  padding: 2px 3px;
   border-bottom: 1px solid var(--line);
   border-right: 1px solid var(--line);
 }
@@ -213,10 +213,9 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
 .month-cell:nth-child(7n + 6), .month-cell:nth-child(7n) { background: var(--subtle); }
 .month-cell.outside-month { background: #edf3ed; }
 .month-cell.today { background: var(--highlight); }
-.month-date {
-  align-self: flex-start;
+.month-date, .month-more {
   min-width: 29px;
-  height: 29px;
+  height: 20px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -226,41 +225,14 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
   font-variant-numeric: tabular-nums;
 }
 .today .month-date { background: var(--accent); color: white; }
-.month-cell:not(.today) .month-date:hover { background: var(--highlight); }
-.month-event {
-  display: grid;
-  gap: 0;
-  padding: 2px 4px;
-  border: 1px solid hsl(var(--hue) 46% 75%);
-  border-left: 3px solid var(--instrument-accent);
-  border-radius: 5px;
-  background: hsl(var(--hue) 63% 91%);
-  color: hsl(var(--hue) 52% 22%);
-  text-align: left;
-  font-size: .8125rem;
-  line-height: 1.1;
-}
-.month-event:hover { background: hsl(var(--hue) 62% 86%); }
-.month-event strong { overflow-wrap: anywhere; }
-.month-event-time { font-size: .75rem; font-variant-numeric: tabular-nums; }
-
-.month-overview .month-cell {
-  height: var(--month-cell-height);
-  gap: 0;
-  padding: 3px 0;
-  border-right: 0;
-  box-shadow: inset -1px 0 var(--line);
-}
-.month-overview .month-cell:nth-child(7n) { box-shadow: none; }
-.month-overview .month-date { height: 20px; flex: 0 0 20px; margin-inline-start: 3px; }
-.overview-bookings {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-auto-rows: .875rem;
+.month-cell:not(.today) .month-date:hover, .month-more:hover { background: var(--highlight); }
+.month-more { color: var(--accent); background: var(--subtle); font-size: .8rem; }
+.month-bars {
+  position: absolute;
+  inset: 24px 0 3px;
+  grid-template-rows: repeat(7, 14px);
   align-content: start;
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
+  pointer-events: none;
 }
 .overview-booking {
   display: flex;
@@ -273,15 +245,15 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
   overflow: hidden;
   border: 0;
   border-radius: 3px;
-  background: var(--instrument-accent);
   color: white;
   font-size: .75rem;
   line-height: 1;
   text-align: left;
+  pointer-events: auto;
 }
 .overview-booking.continues-previous { margin-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .overview-booking.continues-next { margin-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.overview-booking:hover { background: hsl(var(--hue) 75% 24%); }
+.overview-booking:hover { filter: brightness(.86); }
 .overview-booking:focus-visible { outline: 1px solid white; outline-offset: -2px; }
 .overview-count { flex: 0 0 auto; font-weight: 650; font-variant-numeric: tabular-nums; }
 
@@ -341,6 +313,7 @@ legend { padding: 0 4px; font-size: .94rem; font-weight: 650; }
 .choice-list { display: grid; gap: 2px 10px; overflow-y: auto; }
 .instrument-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 120px; }
 .employee-choices { max-height: 140px; margin-top: 6px; }
+.resonator-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 132px; gap: 8px; }
 .choice { display: flex; align-items: center; gap: 7px; min-height: 26px; font-size: .9rem; font-weight: 400; overflow-wrap: anywhere; }
 .choice input { flex: 0 0 1.05rem; width: 1.05rem; height: 1.05rem; min-height: 0; margin: 0; accent-color: var(--accent); }
 .employee-group h3 { margin: 4px 0 2px; color: var(--muted); font-size: .88rem; }
@@ -372,4 +345,5 @@ dialog .directory-form { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; a
   .calendar-header { align-items: stretch; flex-direction: column; }
   .view-picker { align-self: flex-start; }
   .form-grid { grid-template-columns: 1fr; }
+  .resonator-choices { grid-template-columns: 1fr; }
 }

@@ -56,8 +56,27 @@ CREATE TABLE IF NOT EXISTS booking_employees (
     employee_id INTEGER NOT NULL REFERENCES employees(id),
     PRIMARY KEY (booking_id, employee_id)
 );
+CREATE TABLE IF NOT EXISTS resonators (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS booking_resonators (
+    booking_id INTEGER NOT NULL,
+    instrument_id INTEGER NOT NULL,
+    resonator_id INTEGER NOT NULL REFERENCES resonators(id),
+    PRIMARY KEY (booking_id, instrument_id),
+    UNIQUE (booking_id, resonator_id),
+    FOREIGN KEY (booking_id, instrument_id)
+        REFERENCES booking_instruments(booking_id, instrument_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS bookings_by_resonator ON booking_resonators(resonator_id, booking_id);
 """
 MAX_ID = 2**63 - 1
+CATALOGS = {
+    "instruments": ("Название прибора", "Прибор с таким названием уже есть.", "Прибор не найден."),
+    "resonators": ("Название резонатора", "Резонатор с таким названием уже есть.", "Резонатор не найден."),
+}
 
 
 class ApiError(Exception):
@@ -100,7 +119,9 @@ def in_period(db, params):
     rows = db.execute(
         """SELECT b.*,
              (SELECT group_concat(instrument_id) FROM booking_instruments WHERE booking_id = b.id) AS instruments,
-             (SELECT group_concat(employee_id) FROM booking_employees WHERE booking_id = b.id) AS employees
+             (SELECT group_concat(employee_id) FROM booking_employees WHERE booking_id = b.id) AS employees,
+             (SELECT group_concat(instrument_id || ':' || resonator_id)
+              FROM booking_resonators WHERE booking_id = b.id) AS bindings
            FROM bookings AS b WHERE start < ? AND end > ? ORDER BY start, id""",
         (f"{last}T00:00", f"{first}T00:00"),
     )
@@ -110,28 +131,35 @@ def in_period(db, params):
         entry["instrument_ids"] = [int(item) for item in entry.pop("instruments").split(",")]
         employees = entry.pop("employees")
         entry["employee_ids"] = [int(item) for item in employees.split(",")] if employees else []
+        bindings = entry.pop("bindings")
+        entry["resonators"] = {}
+        if bindings:
+            for pair in bindings.split(","):
+                instrument_id, resonator_id = pair.split(":")
+                entry["resonators"][instrument_id] = int(resonator_id)
         result.append(entry)
     return result
 
 
-def save_instrument(db, data, instrument_id=None):
-    name = clean_text(data, "name", "Название прибора", 100)
+def save_catalog_item(db, data, table, item_id=None):
+    label, duplicate, missing = CATALOGS[table]
+    name = clean_text(data, "name", label, 100)
     values = (name, name.casefold())
     try:
-        if instrument_id is None:
+        if item_id is None:
             row = db.execute(
-                "INSERT INTO instruments(name, name_key) VALUES (?, ?) RETURNING id, name",
+                f"INSERT INTO {table}(name, name_key) VALUES (?, ?) RETURNING id, name",
                 values,
             ).fetchone()
         else:
             row = db.execute(
-                "UPDATE instruments SET name = ?, name_key = ? WHERE id = ? RETURNING id, name",
-                (*values, instrument_id),
+                f"UPDATE {table} SET name = ?, name_key = ? WHERE id = ? RETURNING id, name",
+                (*values, item_id),
             ).fetchone()
     except sqlite3.IntegrityError:
-        raise ApiError(409, "Прибор с таким названием уже есть.") from None
+        raise ApiError(409, duplicate) from None
     if row is None:
-        raise ApiError(404, "Прибор не найден.")
+        raise ApiError(404, missing)
     return dict(row)
 
 
@@ -187,10 +215,42 @@ def placeholders(values):
     return ", ".join("?" for _ in values)
 
 
+def chosen_resonators(data, instrument_ids):
+    resonators = data.get("resonators", {})
+    keys = {str(item) for item in instrument_ids}
+    if not isinstance(resonators, dict) or any(key not in keys or not valid_id(item) for key, item in resonators.items()):
+        raise ApiError(400, "Укажите резонаторы только для выбранных приборов.")
+    if len(set(resonators.values())) != len(resonators):
+        raise ApiError(400, "Один резонатор можно выбрать только для одного прибора в брони.")
+    return resonators
+
+
+def check_resonators(db, resonators, start, end, booking_id):
+    if not resonators:
+        return
+    ids = tuple(resonators.values())
+    slots = placeholders(ids)
+    count = db.execute(f"SELECT COUNT(*) FROM resonators WHERE id IN ({slots})", ids).fetchone()[0]
+    if count != len(ids):
+        raise ApiError(404, "Один из выбранных резонаторов не найден.")
+    conflicts = db.execute(
+        f"""SELECT DISTINCT r.name FROM booking_resonators AS x
+            JOIN bookings AS b ON b.id = x.booking_id
+            JOIN resonators AS r ON r.id = x.resonator_id
+            WHERE x.resonator_id IN ({slots}) AND b.start < ? AND b.end > ? AND b.id != ?
+            ORDER BY r.name""",
+        (*ids, end, start, booking_id or 0),
+    ).fetchall()
+    if conflicts:
+        names = ", ".join(f"«{row['name']}»" for row in conflicts)
+        raise ApiError(409, f"На это время уже заняты резонаторы {names}.")
+
+
 def save_booking(db, data, booking_id=None):
     instrument_ids = selected_ids(data.get("instrument_ids", [data.get("instrument_id")]), "Выберите приборы.")
     if not instrument_ids:
         raise ApiError(400, "Выберите хотя бы один прибор.")
+    resonators = chosen_resonators(data, instrument_ids)
     employee_ids = selected_ids(data.get("employee_ids", []), "Проверьте список участников.")
     start = booking_time(data, "start", "Начало")
     end = booking_time(data, "end", "Окончание")
@@ -228,6 +288,7 @@ def save_booking(db, data, booking_id=None):
     if conflicts:
         names = ", ".join(f"«{row['name']}»" for row in conflicts)
         raise ApiError(409, f"На это время уже есть бронь для {names}.")
+    check_resonators(db, resonators, start, end, booking_id)
 
     values = instrument_ids[0], start, end, person, comment
     if booking_id is None:
@@ -251,7 +312,11 @@ def save_booking(db, data, booking_id=None):
     db.executemany(
         "INSERT INTO booking_employees VALUES (?, ?)", ((booking_id, item) for item in employee_ids),
     )
-    return dict(row, instrument_ids=instrument_ids, employee_ids=employee_ids)
+    db.executemany(
+        "INSERT INTO booking_resonators VALUES (?, ?, ?)",
+        ((booking_id, int(instrument_id), resonator_id) for instrument_id, resonator_id in resonators.items()),
+    )
+    return dict(row, instrument_ids=instrument_ids, employee_ids=employee_ids, resonators=resonators)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -285,12 +350,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def api(self, db, url):
         method, path = self.command, url.path
-        if path == "/api/instruments":
+        catalog = path.removeprefix("/api/")
+        if catalog in CATALOGS:
             if method == "GET":
-                rows = db.execute("SELECT id, name FROM instruments ORDER BY id")
+                rows = db.execute(f"SELECT id, name FROM {catalog} ORDER BY id")
                 return 200, [dict(row) for row in rows]
             if method == "POST":
-                return 201, save_instrument(db, self.read_json())
+                return 201, save_catalog_item(db, self.read_json(), catalog)
         if path == "/api/directory" and method == "GET":
             return 200, {
                 "labs": [dict(row) for row in db.execute("SELECT id, name FROM labs ORDER BY id")],
@@ -303,10 +369,12 @@ class Handler(BaseHTTPRequestHandler):
                 return 200, in_period(db, parse_qs(url.query))
             if method == "POST":
                 return 201, save_booking(db, self.read_json())
-        match = re.fullmatch(r"/api/(instruments|labs|employees|bookings)/([1-9][0-9]{0,18})", path)
+        match = re.fullmatch(r"/api/(instruments|resonators|labs|employees|bookings)/([1-9][0-9]{0,18})", path)
         if match and (item_id := int(match[2])) <= MAX_ID:
             if method == "PUT":
-                save = {"instruments": save_instrument, "labs": rename_lab, "employees": save_employee, "bookings": save_booking}
+                if match[1] in CATALOGS:
+                    return 200, save_catalog_item(db, self.read_json(), match[1], item_id)
+                save = {"labs": rename_lab, "employees": save_employee, "bookings": save_booking}
                 return 200, save[match[1]](db, self.read_json(), item_id)
             if method == "DELETE" and match[1] == "bookings":
                 if self.headers.get("Content-Type") != "application/json":

@@ -9,13 +9,17 @@ const instrumentName = instrumentForm.elements.namedItem("name");
 const renameInstrument = $("#rename-instrument");
 const dayBookingsDialog = $("#day-bookings-dialog");
 const directoryDialog = $("#directory-dialog");
+const resonatorDialog = $("#resonator-dialog");
+const resonatorForm = $("#resonator-form");
 const directoryLab = $("#directory-lab");
 const labForm = $("#lab-form");
 const employeeForm = $("#employee-form");
 const bookingLab = $("#booking-lab");
 const bookingDialog = $("#booking-dialog");
 const bookingForm = $("#booking-form");
-const deleteButton = $("#delete-booking");
+const bookingStart = bookingForm.elements.start;
+const bookingEnd = bookingForm.elements.end;
+const cancelBookingButton = $("#cancel-booking");
 const weekdayFormat = new Intl.DateTimeFormat("ru", { weekday: "short" });
 const dayFormat = new Intl.DateTimeFormat("ru", { dateStyle: "full" });
 const rangeFormat = new Intl.DateTimeFormat("ru", { day: "numeric", month: "long", year: "numeric" });
@@ -26,6 +30,7 @@ const state = {
   date: new Date(),
   view: "week",
   instruments: [],
+  resonators: [],
   labs: [],
   employees: [],
   activeId: null,
@@ -33,6 +38,7 @@ const state = {
   bookings: [],
   editingInstrumentId: null,
   editingEmployeeId: null,
+  editingResonatorId: null,
   editingId: null,
   requestId: 0,
 };
@@ -239,17 +245,8 @@ function renderTimeGrid(days, bookings) {
   calendar.replaceChildren(headings, grid);
 }
 
-function renderMonthEvent(booking, day, nextDay, name) {
-  const label = daySegment(booking, day, nextDay).label;
-  const event = element("button", "month-event");
-  event.type = "button";
-  event.dataset.booking = booking.id;
-  event.style.setProperty("--hue", instrumentColor(state.activeId));
-  const people = bookingPeople(booking);
-  event.title = `${label} · ${name} · ${people}`;
-  event.setAttribute("aria-label", `${label}, ${name}, ${people}. Открыть бронь`);
-  event.append(element("span", "month-event-time", label), element("strong", "", people));
-  return event;
+function instrumentNames(booking) {
+  return booking.instrument_ids.map((id) => state.instruments.find((item) => item.id === id)?.name).filter(Boolean).join(" + ");
 }
 
 function openDayBookings(name, day, nextDay, bookings) {
@@ -257,7 +254,7 @@ function openDayBookings(name, day, nextDay, bookings) {
   $("#day-bookings-date").textContent = dayFormat.format(fromKey(day));
   const entries = bookings.map((booking) => {
     const label = daySegment(booking, day, nextDay).label;
-    const item = element("button", "button day-booking", `${label} · ${bookingPeople(booking)}`);
+    const item = element("button", "button day-booking", `${label} · ${instrumentNames(booking)} · ${bookingPeople(booking)}`);
     item.type = "button";
     item.addEventListener("click", () => {
       dayBookingsDialog.close();
@@ -269,89 +266,126 @@ function openDayBookings(name, day, nextDay, bookings) {
   dayBookingsDialog.showModal();
 }
 
-function renderMonthOverviewCell(bookings, day, nextDay, joinsPrevious, joinsNext) {
-  const list = element("div", "overview-bookings");
+function weekSpans(week, bookings) {
   const groups = new Map();
   for (const booking of bookings) {
-    for (const id of booking.instrument_ids) {
-      const group = groups.get(id) ?? [];
-      group.push(booking);
-      groups.set(id, group);
-    }
+    const columns = week.flatMap((day, index) => day && booking.start < `${day.next}T00:00`
+      && booking.end > `${day.key}T00:00` ? [index] : []);
+    if (!columns.length) continue;
+    const first = columns[0];
+    const last = columns.at(-1);
+    const singleDay = first === last && booking.start >= `${week[first].key}T00:00` && booking.end <= `${week[last].next}T00:00`;
+    const key = state.allInstruments && singleDay
+      ? `${first}:${[...booking.instrument_ids].sort((firstId, secondId) => firstId - secondId).join(",")}` : booking.id;
+    if (!groups.has(key)) groups.set(key, { first, last, bookings: [] });
+    groups.get(key).bookings.push(booking);
   }
-  for (const [lane, { id, name }] of state.instruments.entries()) {
-    const group = groups.get(id);
-    if (!group) continue;
-    const descriptions = group.map((booking) => {
-      const label = daySegment(booking, day, nextDay).label;
-      const interval = booking.start.slice(0, 10) === booking.end.slice(0, 10) ? label
-        : `${dateAndClock(booking.start)}–${dateAndClock(booking.end)}`;
-      return { people: bookingPeople(booking), label, interval };
-    });
-    const item = element("button", "overview-booking");
-    item.type = "button";
-    item.style.gridRow = String(lane + 1);
-    item.style.setProperty("--hue", instrumentColor(id));
-    item.classList.toggle("continues-previous", joinsPrevious && group.some((booking) => booking.start < `${day}T00:00`));
-    item.classList.toggle("continues-next", joinsNext && group.some((booking) => booking.end > `${nextDay}T00:00`));
-    item.title = `${name} (${descriptions.map(({ people, interval }) => `${people} · ${interval}`).join("; ")})`;
-    const action = group.length === 1 ? "Открыть бронь" : "Открыть список броней";
-    item.setAttribute("aria-label", `${item.title}. ${action}`);
-    const { people, label } = descriptions[0];
-    item.append(element("span", "overview-name", `${name} (${label.replaceAll(":00", "")} · ${people})`));
-    if (group.length === 1) {
-      item.dataset.booking = group[0].id;
+  return Array.from(groups.values()).sort((first, second) => first.first - second.first || second.last - first.last);
+}
+
+function stripeBackground(instrumentIds) {
+  const colors = instrumentIds.map((id) => `hsl(${instrumentColor(id)} 75% 29%)`);
+  if (colors.length === 1) return colors[0];
+  const bands = colors.map((color, index) => `${color} ${index * 12}px ${(index + 1) * 12}px`);
+  return `repeating-linear-gradient(135deg, ${bands.join(", ")})`;
+}
+
+function renderSpan(span, week, lane, labeled) {
+  const { first, last, bookings } = span;
+  const booking = bookings[0];
+  const { key, next } = week[first];
+  const name = instrumentNames(booking);
+  const item = element("button", "overview-booking");
+  item.type = "button";
+  item.style.gridColumn = `${first + 1} / ${last + 2}`;
+  item.style.gridRow = String(lane + 1);
+  item.style.background = stripeBackground(booking.instrument_ids);
+  item.classList.toggle("continues-previous", booking.start < `${key}T00:00`);
+  item.classList.toggle("continues-next", booking.end > `${week[last].next}T00:00`);
+  item.title = `${name} (${bookings.map((entry) => `${bookingPeople(entry)} · ${dateAndClock(entry.start)}–${dateAndClock(entry.end)}`).join("; ")})`;
+  if (!labeled.has(booking.id)) {
+    const people = bookingPeople(booking);
+    const long = first !== last || booking.start < `${key}T00:00` || booking.end > `${next}T00:00`;
+    const label = long ? people : `${daySegment(booking, key, next).label.replaceAll(":00", "")} · ${people}`;
+    item.append(element("span", "overview-name", `${name} (${label})`));
+    for (const entry of bookings) labeled.add(entry.id);
+  }
+  if (bookings.length === 1) {
+    item.dataset.booking = booking.id;
+    item.setAttribute("aria-label", `${item.title}. Открыть бронь`);
+  } else {
+    item.append(element("span", "overview-count", String(bookings.length)));
+    item.setAttribute("aria-label", `${item.title}. Открыть список броней`);
+    item.addEventListener("click", () => openDayBookings(name, key, next, bookings));
+  }
+  return item;
+}
+
+function renderMonthWeek(week, bookings, today, labeled) {
+  const row = element("div", "month-week");
+  const bars = element("div", "month-bars");
+  const overflow = week.map(() => []);
+  const occupiedUntil = Array(7).fill(-1);
+  for (const span of weekSpans(week, bookings)) {
+    const lane = occupiedUntil.findIndex((last) => last < span.first);
+    if (lane < 0) {
+      for (let column = span.first; column <= span.last; column += 1) overflow[column].push(...span.bookings);
     } else {
-      item.append(element("span", "overview-count", String(group.length)));
-      item.addEventListener("click", () => openDayBookings(name, day, nextDay, group));
+      occupiedUntil[lane] = span.last;
+      bars.append(renderSpan(span, week, lane, labeled));
     }
-    list.append(item);
   }
-  return list;
+
+  for (const [column, day] of week.entries()) {
+    const cell = element("div", "month-cell");
+    if (!day) {
+      cell.classList.add("outside-month");
+      cell.setAttribute("aria-hidden", "true");
+    } else {
+      const { key, next, label, date } = day;
+      cell.classList.toggle("today", key === today);
+      cell.dataset.day = key;
+      const dayButton = element("button", "month-date", label);
+      dayButton.type = "button";
+      dayButton.setAttribute("aria-label", `${dayFormat.format(date)}. Создать бронь`);
+      cell.append(dayButton);
+      if (overflow[column].length) {
+        const extra = element("button", "month-more", `+${overflow[column].length}`);
+        extra.type = "button";
+        extra.setAttribute("aria-label", "Показать остальные брони за день");
+        extra.addEventListener("click", () => openDayBookings("Другие брони", key, next, overflow[column]));
+        cell.append(extra);
+      }
+    }
+    row.append(cell);
+  }
+  row.append(bars);
+  return row;
 }
 
 function renderMonth(days, bookings) {
   const headings = element("div", "month-headings");
-  const grid = element("div", state.allInstruments ? "month-grid month-overview" : "month-grid");
+  const grid = element("div", "month-grid");
   const today = dateKey(new Date());
-  const instrument = state.instruments.find(({ id }) => id === state.activeId);
   const offset = mondayOffset(days[0]);
   const monday = addDays(days[0], -offset);
   for (let index = 0; index < 7; index += 1) {
     headings.append(element("div", "date-heading", weekdayFormat.format(addDays(monday, index))));
   }
 
-  const cellCount = Math.ceil((offset + days.length) / 7) * 7;
-  for (let index = 0; index < cellCount; index += 1) {
-    const date = days[index - offset];
-    if (!date) {
-      const blank = element("div", "month-cell outside-month");
-      blank.setAttribute("aria-hidden", "true");
-      grid.append(blank);
-      continue;
-    }
-
-    const day = dateKey(date);
-    const nextDay = dateKey(addDays(date, 1));
-    const cell = element("div", day === today ? "month-cell today" : "month-cell");
-    const withMonth = state.view === "rolling" && (index === 0 || date.getDate() === 1);
-    const dateLabel = withMonth ? `${pad(date.getDate())}.${pad(date.getMonth() + 1)}` : String(date.getDate());
-    const dayButton = element("button", "month-date", dateLabel);
-    dayButton.type = "button";
-    dayButton.dataset.start = `${day}T09:00`;
-    dayButton.setAttribute("aria-label", `${dayFormat.format(date)}. Создать бронь`);
-    cell.append(dayButton);
-    const entries = bookingsOnDay(bookings, day, nextDay);
-    if (state.allInstruments) {
-      const joinsPrevious = index > offset && index % 7 !== 0;
-      const joinsNext = index < offset + days.length - 1 && index % 7 !== 6;
-      cell.append(renderMonthOverviewCell(entries, day, nextDay, joinsPrevious, joinsNext));
-    } else {
-      for (const booking of entries) {
-        cell.append(renderMonthEvent(booking, day, nextDay, instrument.name));
-      }
-    }
-    grid.append(cell);
+  const labeled = new Set();
+  for (let start = -offset; start < days.length; start += 7) {
+    const week = Array.from({ length: 7 }, (_, column) => {
+      const index = start + column;
+      const date = days[index];
+      if (!date) return null;
+      const key = dateKey(date);
+      const next = dateKey(addDays(date, 1));
+      const withMonth = state.view === "rolling" && (index === 0 || date.getDate() === 1);
+      const label = withMonth ? `${pad(date.getDate())}.${pad(date.getMonth() + 1)}` : String(date.getDate());
+      return { key, next, label, date };
+    });
+    grid.append(renderMonthWeek(week, bookings, today, labeled));
   }
   calendar.replaceChildren(headings, grid);
 }
@@ -464,6 +498,17 @@ function fillBookingChoices(booking) {
   const instrumentIds = booking?.instrument_ids ?? [state.activeId];
   $("#booking-instruments").replaceChildren(...state.instruments.map(({ id, name }) =>
     choice("instrument_ids", id, name, instrumentIds.includes(id))));
+  const resonators = state.instruments.map(({ id, name }) => {
+    const label = element("label", "", name);
+    const select = element("select");
+    select.dataset.instrument = id;
+    select.append(new Option("Без резонатора", ""), ...state.resonators.map((item) => new Option(item.name, item.id)));
+    select.value = booking?.resonators?.[id] ?? "";
+    label.append(select);
+    return label;
+  });
+  $("#booking-resonators").replaceChildren(...resonators);
+  updateResonatorChoices();
   bookingLab.replaceChildren(new Option("Все лаборатории", 0), ...state.labs.map(({ id, name }) => new Option(name, id)));
 
   const employeeIds = booking?.employee_ids ?? [];
@@ -481,6 +526,15 @@ function fillBookingChoices(booking) {
   empty.id = "no-employees";
   $("#booking-employees").replaceChildren(...groups, empty);
   updateEmployeeChoices();
+}
+
+function updateResonatorChoices() {
+  const selected = new Set(Array.from($("#booking-instruments").querySelectorAll("input:checked"), (input) => input.value));
+  for (const select of $("#booking-resonators").querySelectorAll("select")) {
+    select.disabled = !selected.has(select.dataset.instrument);
+    select.parentElement.hidden = select.disabled;
+  }
+  $("#booking-resonator-fields").hidden = !state.resonators.length || !selected.size;
 }
 
 function resetEmployeeForm() {
@@ -529,19 +583,55 @@ function fillDirectoryLabs() {
   if (labId) directoryLab.value = labId;
 }
 
+function resetResonatorForm() {
+  state.editingResonatorId = null;
+  resonatorForm.reset();
+  formError(resonatorForm);
+  $("#save-resonator").textContent = "Добавить";
+  $("#cancel-resonator-edit").hidden = true;
+}
+
+function renderResonators() {
+  const items = state.resonators.map(({ id, name }) => {
+    const row = element("div", "directory-employee");
+    const edit = element("button", "button", "Изменить");
+    edit.type = "button";
+    edit.setAttribute("aria-label", `Переименовать резонатор ${name}`);
+    edit.addEventListener("click", () => {
+      state.editingResonatorId = id;
+      const input = resonatorForm.elements.namedItem("name");
+      input.value = name;
+      $("#save-resonator").textContent = "Сохранить";
+      $("#cancel-resonator-edit").hidden = false;
+      formError(resonatorForm);
+      input.focus();
+      input.select();
+    });
+    row.append(element("span", "", name), edit);
+    return row;
+  });
+  $("#resonator-list").replaceChildren(...(items.length ? items : [element("p", "selection", "Список пока пуст.")]));
+}
+
+function shiftTime(value, milliseconds) {
+  const time = new Date(Date.parse(`${value}Z`) + milliseconds);
+  return Number.isNaN(time.getTime()) || time.getUTCFullYear() > 9999 ? "" : time.toISOString().slice(0, 16);
+}
+
 function openBookingForm(booking, slotStart) {
   if (state.activeId === null) return;
   const start = booking?.start || slotStart || `${dateKey(state.date)}T09:00`;
-  const hour = Number(start.slice(11, 13));
-  const nextHour = hour === 23 ? `${dateKey(addDays(fromKey(start.slice(0, 10)), 1))}T00:00`
-    : `${start.slice(0, 10)}T${pad(hour + 1)}:00`;
+  const workdayEnd = `${start.slice(0, 10)}T20:00`;
+  const end = booking?.end ?? (start < workdayEnd ? workdayEnd : shiftTime(start, 3600000));
   const fields = bookingForm.elements;
   state.editingId = booking?.id ?? null;
   $("#booking-dialog-title").textContent = booking ? "Изменить бронь" : "Новая бронь";
-  deleteButton.hidden = !booking;
+  cancelBookingButton.hidden = !booking;
   fillBookingChoices(booking);
-  fields.start.value = start;
-  fields.end.value = booking?.end || nextHour;
+  bookingStart.value = start;
+  bookingStart.dataset.initial = start;
+  bookingEnd.min = shiftTime(start, 60000);
+  bookingEnd.value = end;
   fields.person.value = booking?.person || "";
   fields.comment.value = booking?.comment || "";
   formError(bookingForm);
@@ -568,6 +658,21 @@ renameInstrument.addEventListener("click", () => {
   if (instrument) openInstrumentForm(instrument);
 });
 $("#new-booking").addEventListener("click", () => openBookingForm());
+$("#manage-resonators").addEventListener("click", () => {
+  resetResonatorForm();
+  renderResonators();
+  resonatorDialog.showModal();
+});
+$("#cancel-resonator-edit").addEventListener("click", resetResonatorForm);
+$("#booking-instruments").addEventListener("change", updateResonatorChoices);
+bookingStart.addEventListener("change", () => {
+  const start = bookingStart.value;
+  if (!start) return;
+  const duration = Date.parse(`${bookingEnd.value}Z`) - Date.parse(`${bookingStart.dataset.initial}Z`);
+  bookingEnd.min = shiftTime(start, 60000);
+  bookingEnd.value = shiftTime(start, duration > 0 ? duration : 3600000);
+  bookingStart.dataset.initial = start;
+});
 $("#manage-directory").addEventListener("click", () => {
   fillDirectoryLabs();
   selectDirectoryLab();
@@ -582,6 +687,14 @@ calendar.addEventListener("click", (event) => {
   if (!button) return;
   if (button.dataset.start) openBookingForm(null, button.dataset.start);
   if (button.dataset.booking) openBookingForm(state.bookings.find((booking) => booking.id === Number(button.dataset.booking)));
+  if (button.classList.contains("month-date") && (event.detail === 0 || event.pointerType === "touch")) {
+    openBookingForm(null, `${button.parentElement.dataset.day}T09:00`);
+  }
+});
+calendar.addEventListener("dblclick", (event) => {
+  if (event.target.closest("button:not(.month-date)")) return;
+  const day = event.target.closest("[data-day]")?.dataset.day;
+  if (day) openBookingForm(null, `${day}T09:00`);
 });
 
 for (const button of document.querySelectorAll(".view-picker button")) {
@@ -660,6 +773,19 @@ employeeForm.addEventListener("submit", (event) => {
   });
 });
 
+resonatorForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submit(resonatorForm, async () => {
+    const id = state.editingResonatorId;
+    const payload = { name: resonatorForm.elements.namedItem("name").value };
+    const item = await api(id === null ? "resonators" : `resonators/${id}`, id === null ? "POST" : "PUT", payload);
+    if (id === null) state.resonators.push(item);
+    else state.resonators = state.resonators.map((resonator) => resonator.id === item.id ? item : resonator);
+    resetResonatorForm();
+    renderResonators();
+  });
+});
+
 bookingForm.addEventListener("submit", (event) => {
   event.preventDefault();
   submit(bookingForm, async () => {
@@ -667,6 +793,9 @@ bookingForm.addEventListener("submit", (event) => {
     const payload = Object.fromEntries(fields);
     payload.instrument_ids = fields.getAll("instrument_ids").map(Number);
     payload.employee_ids = fields.getAll("employee_ids").map(Number);
+    const resonators = Array.from($("#booking-resonators").querySelectorAll("select:not(:disabled)"));
+    payload.resonators = Object.fromEntries(resonators.filter((select) => select.value)
+      .map((select) => [select.dataset.instrument, Number(select.value)]));
     const editing = state.editingId !== null;
     const booking = await api(editing ? `bookings/${state.editingId}` : "bookings", editing ? "PUT" : "POST", payload);
     if (!booking.instrument_ids.includes(state.activeId)) state.activeId = booking.instrument_ids[0];
@@ -677,8 +806,8 @@ bookingForm.addEventListener("submit", (event) => {
   });
 });
 
-deleteButton.addEventListener("click", () => {
-  if (!window.confirm("Удалить эту бронь?")) return;
+cancelBookingButton.addEventListener("click", () => {
+  if (!window.confirm("Отменить эту бронь?")) return;
   submit(bookingForm, async () => {
     await api(`bookings/${state.editingId}`, "DELETE");
     bookingDialog.close();
@@ -689,11 +818,13 @@ deleteButton.addEventListener("click", () => {
 async function start() {
   $("#new-instrument").disabled = true;
   try {
-    const [instruments, directory] = await Promise.all([api("instruments"), api("directory")]);
+    const [instruments, directory, resonators] = await Promise.all([api("instruments"), api("directory"), api("resonators")]);
     state.instruments = instruments;
+    state.resonators = resonators;
     state.labs = directory.labs;
     state.employees = directory.employees;
     $("#manage-directory").disabled = false;
+    $("#manage-resonators").disabled = false;
     state.activeId = state.instruments[0]?.id ?? null;
     renderInstruments();
   } catch (error) {

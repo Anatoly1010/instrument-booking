@@ -21,6 +21,7 @@
       <div id="instruments" class="instruments"></div>
       <button id="new-instrument" class="button add-instrument" type="button"><span aria-hidden="true">+</span> Добавить прибор</button>
       <button id="manage-directory" class="button directory-button" type="button" disabled>Лаборатории и сотрудники</button>
+      <button id="manage-resonators" class="button directory-button" type="button" disabled>Резонаторы</button>
     </aside>
 
     <main>
@@ -102,6 +103,22 @@
     </div>
   </dialog>
 
+  <dialog id="resonator-dialog" aria-labelledby="resonator-title">
+    <div class="dialog-header">
+      <h2 id="resonator-title">Резонаторы</h2>
+      <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
+    </div>
+    <div class="directory-content">
+      <div id="resonator-list" class="directory-employees"></div>
+      <form id="resonator-form" class="directory-form">
+        <label>Название резонатора <input name="name" required maxlength="100"></label>
+        <button id="save-resonator" class="button primary" type="submit">Добавить</button>
+        <button id="cancel-resonator-edit" class="button wide" type="button" hidden>Отмена редактирования</button>
+        <p class="form-error" role="alert" hidden></p>
+      </form>
+    </div>
+  </dialog>
+
   <dialog id="day-bookings-dialog" aria-labelledby="day-bookings-title">
     <div class="dialog-header">
       <h2 id="day-bookings-title"></h2>
@@ -121,6 +138,10 @@
         <legend>Приборы</legend>
         <div id="booking-instruments" class="choice-list instrument-choices"></div>
       </fieldset>
+      <fieldset id="booking-resonator-fields" hidden>
+        <legend>Резонаторы</legend>
+        <div id="booking-resonators" class="choice-list resonator-choices"></div>
+      </fieldset>
       <div class="form-grid">
         <label>Начало <input name="start" type="datetime-local" required></label>
         <label>Окончание <input name="end" type="datetime-local" required></label>
@@ -135,7 +156,7 @@
       <label>Комментарий <textarea name="comment" maxlength="1000" rows="3"></textarea></label>
       <p class="form-error" role="alert" hidden></p>
       <div class="dialog-actions">
-        <button id="delete-booking" class="button danger" type="button" hidden>Удалить бронь</button>
+        <button id="cancel-booking" class="button danger" type="button" hidden>Отменить бронь</button>
         <button type="button" class="button" data-close>Закрыть</button>
         <button type="submit" class="button primary">Сохранить</button>
       </div>
