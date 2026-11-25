@@ -79,15 +79,24 @@ def in_period(db, params):
     ).fetchall()
 
 
-def create_instrument(db, data):
+def save_instrument(db, data, instrument_id=None):
     name = clean_text(data, "name", "Название прибора", 100)
+    values = (name, name.casefold())
     try:
-        row = db.execute(
-            "INSERT INTO instruments(name, name_key) VALUES (?, ?) RETURNING id, name",
-            (name, name.casefold()),
-        ).fetchone()
+        if instrument_id is None:
+            row = db.execute(
+                "INSERT INTO instruments(name, name_key) VALUES (?, ?) RETURNING id, name",
+                values,
+            ).fetchone()
+        else:
+            row = db.execute(
+                "UPDATE instruments SET name = ?, name_key = ? WHERE id = ? RETURNING id, name",
+                (*values, instrument_id),
+            ).fetchone()
     except sqlite3.IntegrityError:
         raise ApiError(409, "Прибор с таким названием уже есть.") from None
+    if row is None:
+        raise ApiError(404, "Прибор не найден.")
     return dict(row)
 
 
@@ -170,7 +179,11 @@ class Handler(BaseHTTPRequestHandler):
                 rows = db.execute("SELECT id, name FROM instruments ORDER BY id")
                 return 200, [dict(row) for row in rows]
             if method == "POST":
-                return 201, create_instrument(db, self.read_json())
+                return 201, save_instrument(db, self.read_json())
+        if method == "PUT" and (match := re.fullmatch(r"/api/instruments/([1-9][0-9]{0,18})", path)):
+            instrument_id = int(match[1])
+            if instrument_id <= 2**63 - 1:
+                return 200, save_instrument(db, self.read_json(), instrument_id)
         if path == "/api/bookings":
             if method == "GET":
                 return 200, [dict(row) for row in in_period(db, parse_qs(url.query))]

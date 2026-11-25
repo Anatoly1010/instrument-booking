@@ -5,6 +5,8 @@ const calendar = $("#calendar");
 const datePicker = $("#calendar-date");
 const instrumentDialog = $("#instrument-dialog");
 const instrumentForm = $("#instrument-form");
+const instrumentName = instrumentForm.elements.namedItem("name");
+const renameInstrument = $("#rename-instrument");
 const bookingDialog = $("#booking-dialog");
 const bookingForm = $("#booking-form");
 const deleteButton = $("#delete-booking");
@@ -12,7 +14,7 @@ const weekdayFormat = new Intl.DateTimeFormat("ru", { weekday: "short" });
 const dayFormat = new Intl.DateTimeFormat("ru", { dateStyle: "full" });
 const rangeFormat = new Intl.DateTimeFormat("ru", { day: "numeric", month: "long", year: "numeric" });
 const monthFormat = new Intl.DateTimeFormat("ru", { month: "long", year: "numeric" });
-const hues = [203, 158, 270, 24, 330, 47, 190];
+const hues = [138, 173, 270, 24, 330, 47, 205];
 
 const state = {
   date: new Date(),
@@ -21,6 +23,7 @@ const state = {
   activeId: null,
   allInstruments: false,
   bookings: [],
+  editingInstrumentId: null,
   editingId: null,
   requestId: 0,
 };
@@ -158,7 +161,7 @@ function bookingsOnDay(bookings, day, nextDay) {
 
 function renderEvent(booking, day, nextDay) {
   const { start, end, label: timeLabel } = daySegment(booking, day, nextDay);
-  const button = element("button", end - start < 40 ? "event compact" : "event");
+  const button = element("button", end - start < 28 ? "event compact" : "event");
   button.type = "button";
   button.dataset.booking = booking.id;
   button.style.top = `${start / 14.4}%`;
@@ -277,6 +280,7 @@ async function refreshCalendar(resetScroll = false) {
   const first = days[0];
   const last = days.at(-1);
   $("#calendar-title").textContent = state.allInstruments ? "Все приборы" : instrument?.name || "Календарь";
+  renameInstrument.hidden = !instrument || state.allInstruments;
   let period = "";
   if (instrument) {
     if (state.view === "month") period = monthFormat.format(first);
@@ -327,10 +331,14 @@ async function submit(form, action) {
   }
 }
 
-function openInstrumentForm() {
-  instrumentForm.reset();
+function openInstrumentForm(instrument = null) {
+  state.editingInstrumentId = instrument?.id ?? null;
+  instrumentName.value = instrument?.name ?? "";
+  $("#instrument-dialog-title").textContent = instrument ? "Переименовать прибор" : "Добавить прибор";
+  $("#save-instrument").textContent = instrument ? "Сохранить" : "Добавить";
   formError(instrumentForm);
   instrumentDialog.showModal();
+  if (instrument) instrumentName.select();
 }
 
 function openBookingForm(booking, slotStart) {
@@ -367,8 +375,12 @@ $("#instruments").addEventListener("click", (event) => {
   refreshCalendar();
 });
 
-$("#new-instrument").addEventListener("click", openInstrumentForm);
-$("#empty-add").addEventListener("click", openInstrumentForm);
+$("#new-instrument").addEventListener("click", () => openInstrumentForm());
+$("#empty-add").addEventListener("click", () => openInstrumentForm());
+renameInstrument.addEventListener("click", () => {
+  const instrument = state.instruments.find(({ id }) => id === state.activeId);
+  if (instrument) openInstrumentForm(instrument);
+});
 $("#new-booking").addEventListener("click", () => openBookingForm());
 calendar.addEventListener("click", (event) => {
   const button = event.target.closest("button");
@@ -412,13 +424,20 @@ for (const dialog of document.querySelectorAll("dialog")) {
 instrumentForm.addEventListener("submit", (event) => {
   event.preventDefault();
   submit(instrumentForm, async () => {
-    const item = await api("instruments", "POST", { name: instrumentForm.elements.name.value });
-    state.instruments.push(item);
-    state.activeId = item.id;
-    state.allInstruments = false;
+    const editingId = state.editingInstrumentId;
+    const payload = { name: instrumentName.value };
+    if (editingId === null) {
+      const item = await api("instruments", "POST", payload);
+      state.instruments.push(item);
+      state.activeId = item.id;
+      state.allInstruments = false;
+    } else {
+      const item = await api(`instruments/${editingId}`, "PUT", payload);
+      state.instruments = state.instruments.map((instrument) => instrument.id === item.id ? item : instrument);
+    }
     renderInstruments();
     instrumentDialog.close();
-    refreshCalendar(true);
+    refreshCalendar(editingId === null);
   });
 });
 
