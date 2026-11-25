@@ -33,7 +33,31 @@ CREATE TABLE IF NOT EXISTS bookings (
     comment TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS booking_intervals ON bookings(instrument_id, start, end);
+CREATE TABLE IF NOT EXISTS booking_instruments (
+    booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id),
+    PRIMARY KEY (booking_id, instrument_id)
+);
+CREATE INDEX IF NOT EXISTS bookings_by_instrument ON booking_instruments(instrument_id, booking_id);
+CREATE TABLE IF NOT EXISTS labs (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS employees (
+    id INTEGER PRIMARY KEY,
+    lab_id INTEGER NOT NULL REFERENCES labs(id),
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    UNIQUE (lab_id, name_key)
+);
+CREATE TABLE IF NOT EXISTS booking_employees (
+    booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    employee_id INTEGER NOT NULL REFERENCES employees(id),
+    PRIMARY KEY (booking_id, employee_id)
+);
 """
+MAX_ID = 2**63 - 1
 
 
 class ApiError(Exception):
@@ -73,10 +97,21 @@ def in_period(db, params):
             raise ValueError
     except (KeyError, ValueError):
         raise ApiError(400, "Укажите диапазон дат до 31 дня.") from None
-    return db.execute(
-        "SELECT * FROM bookings WHERE start < ? AND end > ? ORDER BY start, id",
+    rows = db.execute(
+        """SELECT b.*,
+             (SELECT group_concat(instrument_id) FROM booking_instruments WHERE booking_id = b.id) AS instruments,
+             (SELECT group_concat(employee_id) FROM booking_employees WHERE booking_id = b.id) AS employees
+           FROM bookings AS b WHERE start < ? AND end > ? ORDER BY start, id""",
         (f"{last}T00:00", f"{first}T00:00"),
-    ).fetchall()
+    )
+    result = []
+    for row in rows:
+        entry = dict(row)
+        entry["instrument_ids"] = [int(item) for item in entry.pop("instruments").split(",")]
+        employees = entry.pop("employees")
+        entry["employee_ids"] = [int(item) for item in employees.split(",")] if employees else []
+        result.append(entry)
+    return result
 
 
 def save_instrument(db, data, instrument_id=None):
@@ -100,15 +135,70 @@ def save_instrument(db, data, instrument_id=None):
     return dict(row)
 
 
+def rename_lab(db, data, lab_id):
+    name = clean_text(data, "name", "Название лаборатории", 100)
+    try:
+        row = db.execute(
+            "UPDATE labs SET name = ?, name_key = ? WHERE id = ? RETURNING id, name",
+            (name, name.casefold(), lab_id),
+        ).fetchone()
+    except sqlite3.IntegrityError:
+        raise ApiError(409, "Лаборатория с таким названием уже есть.") from None
+    if row is None:
+        raise ApiError(404, "Лаборатория не найдена.")
+    return dict(row)
+
+
+def valid_id(value):
+    return type(value) is int and 1 <= value <= MAX_ID
+
+
+def save_employee(db, data, employee_id=None):
+    lab_id = data.get("lab_id")
+    if not valid_id(lab_id) or not db.execute("SELECT 1 FROM labs WHERE id = ?", (lab_id,)).fetchone():
+        raise ApiError(404, "Лаборатория не найдена.")
+    name = clean_text(data, "name", "Имя сотрудника", 100)
+    values = (lab_id, name, name.casefold())
+    try:
+        if employee_id is None:
+            row = db.execute(
+                "INSERT INTO employees(lab_id, name, name_key) VALUES (?, ?, ?) RETURNING id, lab_id, name",
+                values,
+            ).fetchone()
+        else:
+            row = db.execute(
+                "UPDATE employees SET lab_id = ?, name = ?, name_key = ? WHERE id = ? RETURNING id, lab_id, name",
+                (*values, employee_id),
+            ).fetchone()
+    except sqlite3.IntegrityError:
+        raise ApiError(409, "В этой лаборатории уже есть сотрудник с таким именем.") from None
+    if row is None:
+        raise ApiError(404, "Сотрудник не найден.")
+    return dict(row)
+
+
+def selected_ids(value, message):
+    if not isinstance(value, list) or not all(valid_id(item) for item in value):
+        raise ApiError(400, message)
+    return list(dict.fromkeys(value))
+
+
+def placeholders(values):
+    return ", ".join("?" for _ in values)
+
+
 def save_booking(db, data, booking_id=None):
-    instrument_id = data.get("instrument_id")
-    if type(instrument_id) is not int or not 1 <= instrument_id <= 2**63 - 1:
-        raise ApiError(400, "Выберите прибор.")
+    instrument_ids = selected_ids(data.get("instrument_ids", [data.get("instrument_id")]), "Выберите приборы.")
+    if not instrument_ids:
+        raise ApiError(400, "Выберите хотя бы один прибор.")
+    employee_ids = selected_ids(data.get("employee_ids", []), "Проверьте список участников.")
     start = booking_time(data, "start", "Начало")
     end = booking_time(data, "end", "Окончание")
     if end <= start:
         raise ApiError(400, "Окончание должно быть позже начала.")
-    person = clean_text(data, "person", "Кто бронирует", 100)
+    person = clean_text(data, "person", "Участники вручную", 100, required=False)
+    if not person and not employee_ids:
+        raise ApiError(400, "Выберите сотрудников или укажите участников вручную.")
     comment = clean_text(data, "comment", "Комментарий", 1000, required=False)
 
     # Hold SQLite's write lock across the overlap check and the write.
@@ -117,17 +207,29 @@ def save_booking(db, data, booking_id=None):
         "SELECT 1 FROM bookings WHERE id = ?", (booking_id,),
     ).fetchone():
         raise ApiError(404, "Эта бронь уже удалена.")
-    if not db.execute("SELECT 1 FROM instruments WHERE id = ?", (instrument_id,)).fetchone():
-        raise ApiError(404, "Прибор не найден.")
-    conflict = db.execute(
-        """SELECT 1 FROM bookings
-           WHERE instrument_id = ? AND start < ? AND end > ? AND id != ? LIMIT 1""",
-        (instrument_id, end, start, booking_id or 0),
-    ).fetchone()
-    if conflict:
-        raise ApiError(409, "Прибор уже забронирован на это время. Выберите другой интервал.")
+    slots = placeholders(instrument_ids)
+    count = db.execute(f"SELECT COUNT(*) FROM instruments WHERE id IN ({slots})", instrument_ids).fetchone()[0]
+    if count != len(instrument_ids):
+        raise ApiError(404, "Один из выбранных приборов не найден.")
+    if employee_ids:
+        count = db.execute(
+            f"SELECT COUNT(*) FROM employees WHERE id IN ({placeholders(employee_ids)})", employee_ids,
+        ).fetchone()[0]
+        if count != len(employee_ids):
+            raise ApiError(404, "Один из выбранных сотрудников не найден.")
+    conflicts = db.execute(
+        f"""SELECT DISTINCT i.name FROM booking_instruments AS x
+            JOIN bookings AS b ON b.id = x.booking_id
+            JOIN instruments AS i ON i.id = x.instrument_id
+            WHERE x.instrument_id IN ({slots}) AND b.start < ? AND b.end > ? AND b.id != ?
+            ORDER BY i.name""",
+        (*instrument_ids, end, start, booking_id or 0),
+    ).fetchall()
+    if conflicts:
+        names = ", ".join(f"«{row['name']}»" for row in conflicts)
+        raise ApiError(409, f"На это время уже есть бронь для {names}.")
 
-    values = instrument_id, start, end, person, comment
+    values = instrument_ids[0], start, end, person, comment
     if booking_id is None:
         row = db.execute(
             """INSERT INTO bookings(instrument_id, start, end, person, comment)
@@ -140,7 +242,16 @@ def save_booking(db, data, booking_id=None):
                WHERE id = ? RETURNING *""",
             (*values, booking_id),
         ).fetchone()
-    return dict(row)
+        db.execute("DELETE FROM booking_instruments WHERE booking_id = ?", (booking_id,))
+        db.execute("DELETE FROM booking_employees WHERE booking_id = ?", (booking_id,))
+    booking_id = row["id"]
+    db.executemany(
+        "INSERT INTO booking_instruments VALUES (?, ?)", ((booking_id, item) for item in instrument_ids),
+    )
+    db.executemany(
+        "INSERT INTO booking_employees VALUES (?, ?)", ((booking_id, item) for item in employee_ids),
+    )
+    return dict(row, instrument_ids=instrument_ids, employee_ids=employee_ids)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -180,23 +291,27 @@ class Handler(BaseHTTPRequestHandler):
                 return 200, [dict(row) for row in rows]
             if method == "POST":
                 return 201, save_instrument(db, self.read_json())
-        if method == "PUT" and (match := re.fullmatch(r"/api/instruments/([1-9][0-9]{0,18})", path)):
-            instrument_id = int(match[1])
-            if instrument_id <= 2**63 - 1:
-                return 200, save_instrument(db, self.read_json(), instrument_id)
+        if path == "/api/directory" and method == "GET":
+            return 200, {
+                "labs": [dict(row) for row in db.execute("SELECT id, name FROM labs ORDER BY id")],
+                "employees": [dict(row) for row in db.execute("SELECT id, lab_id, name FROM employees ORDER BY name_key, id")],
+            }
+        if path == "/api/employees" and method == "POST":
+            return 201, save_employee(db, self.read_json())
         if path == "/api/bookings":
             if method == "GET":
-                return 200, [dict(row) for row in in_period(db, parse_qs(url.query))]
+                return 200, in_period(db, parse_qs(url.query))
             if method == "POST":
                 return 201, save_booking(db, self.read_json())
-        match = re.fullmatch(r"/api/bookings/([1-9][0-9]{0,18})", path)
-        if match and (booking_id := int(match[1])) <= 2**63 - 1:
+        match = re.fullmatch(r"/api/(instruments|labs|employees|bookings)/([1-9][0-9]{0,18})", path)
+        if match and (item_id := int(match[2])) <= MAX_ID:
             if method == "PUT":
-                return 200, save_booking(db, self.read_json(), booking_id)
-            if method == "DELETE":
+                save = {"instruments": save_instrument, "labs": rename_lab, "employees": save_employee, "bookings": save_booking}
+                return 200, save[match[1]](db, self.read_json(), item_id)
+            if method == "DELETE" and match[1] == "bookings":
                 if self.headers.get("Content-Type") != "application/json":
                     raise ApiError(415, "Ожидается запрос JSON.")
-                if db.execute("DELETE FROM bookings WHERE id = ?", (booking_id,)).rowcount == 0:
+                if db.execute("DELETE FROM bookings WHERE id = ?", (item_id,)).rowcount == 0:
                     raise ApiError(404, "Эта бронь уже удалена.")
                 return HTTPStatus.NO_CONTENT, None
         raise ApiError(404, "Запрошенный адрес не найден.")
@@ -233,8 +348,15 @@ class Handler(BaseHTTPRequestHandler):
 def create_server(port, db_path):
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path)) as db:
-        db.executescript(SCHEMA)
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("PRAGMA foreign_keys = ON")
+        db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
+        db.execute("INSERT OR IGNORE INTO booking_instruments SELECT id, instrument_id FROM bookings")
+        labs = [(number, f"Лаборатория {number}") for number in range(1, 5)]
+        db.executemany(
+            "INSERT OR IGNORE INTO labs(id, name, name_key) VALUES (?, ?, ?)",
+            ((lab_id, name, name.casefold()) for lab_id, name in labs),
+        )
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.db_path = db_path
     return server

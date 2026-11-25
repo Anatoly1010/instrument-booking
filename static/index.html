@@ -20,6 +20,7 @@
       <h2 id="instruments-heading">Приборы</h2>
       <div id="instruments" class="instruments"></div>
       <button id="new-instrument" class="button add-instrument" type="button"><span aria-hidden="true">+</span> Добавить прибор</button>
+      <button id="manage-directory" class="button directory-button" type="button" disabled>Лаборатории и сотрудники</button>
     </aside>
 
     <main>
@@ -35,6 +36,7 @@
           <button type="button" data-view="day" aria-pressed="false">День</button>
           <button type="button" data-view="week" aria-pressed="true">Неделя</button>
           <button type="button" data-view="month" aria-pressed="false">Месяц</button>
+          <button type="button" data-view="rolling" aria-pressed="false">4 недели</button>
         </div>
       </div>
 
@@ -75,6 +77,31 @@
     </form>
   </dialog>
 
+  <dialog id="directory-dialog" aria-labelledby="directory-title">
+    <div class="dialog-header">
+      <h2 id="directory-title">Лаборатории и сотрудники</h2>
+      <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
+    </div>
+    <div class="directory-content">
+      <label>Лаборатория <select id="directory-lab"></select></label>
+      <form id="lab-form" class="directory-form">
+        <label>Название лаборатории <input name="name" required maxlength="100"></label>
+        <button class="button" type="submit">Переименовать</button>
+        <p class="form-error" role="alert" hidden></p>
+      </form>
+      <section class="directory-people" aria-labelledby="directory-people-title">
+        <h3 id="directory-people-title">Сотрудники лаборатории</h3>
+        <div id="directory-employees" class="directory-employees"></div>
+        <form id="employee-form" class="directory-form">
+          <label>Имя сотрудника <input name="name" required maxlength="100"></label>
+          <button id="save-employee" class="button primary" type="submit">Добавить</button>
+          <button id="cancel-employee-edit" class="button wide" type="button" hidden>Отмена редактирования</button>
+          <p class="form-error" role="alert" hidden></p>
+        </form>
+      </section>
+    </div>
+  </dialog>
+
   <dialog id="day-bookings-dialog" aria-labelledby="day-bookings-title">
     <div class="dialog-header">
       <h2 id="day-bookings-title"></h2>
@@ -90,14 +117,21 @@
         <h2 id="booking-dialog-title">Новая бронь</h2>
         <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
       </div>
-      <label>Прибор
-        <select name="instrument_id" required></select>
-      </label>
+      <fieldset>
+        <legend>Приборы</legend>
+        <div id="booking-instruments" class="choice-list instrument-choices"></div>
+      </fieldset>
       <div class="form-grid">
         <label>Начало <input name="start" type="datetime-local" required></label>
         <label>Окончание <input name="end" type="datetime-local" required></label>
       </div>
-      <label>Кто бронирует <input name="person" maxlength="100" required></label>
+      <fieldset>
+        <legend>Сотрудники</legend>
+        <label>Лаборатория <select id="booking-lab"></select></label>
+        <div id="booking-employees" class="choice-list employee-choices"></div>
+        <p id="employee-selection" class="selection" aria-live="polite"></p>
+      </fieldset>
+      <label>Участники вручную <input name="person" maxlength="100" placeholder="Если человека нет в списке"></label>
       <label>Комментарий <textarea name="comment" maxlength="1000" rows="3"></textarea></label>
       <p class="form-error" role="alert" hidden></p>
       <div class="dialog-actions">

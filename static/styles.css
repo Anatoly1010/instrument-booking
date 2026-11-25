@@ -95,6 +95,7 @@ h1, h2, p { margin: 0; }
 .swatch { flex: 0 0 12px; height: 12px; border-radius: 3px; background: var(--instrument-accent); }
 .instrument-name, .overview-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .add-instrument { margin-top: 10px; width: 100%; color: var(--accent); }
+.directory-button { margin-top: 8px; width: 100%; }
 
 .calendar-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin: 0 0 20px; }
 .calendar-header > div:first-child { min-width: 0; }
@@ -243,16 +244,31 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
 .month-event strong { overflow-wrap: anywhere; }
 .month-event-time { font-size: .75rem; font-variant-numeric: tabular-nums; }
 
-.month-overview .month-cell { height: var(--month-cell-height); gap: 0; padding: 3px; }
-.month-overview .month-date { height: 20px; flex: 0 0 20px; }
-.overview-bookings { flex: 1; min-height: 0; overflow: auto; }
+.month-overview .month-cell {
+  height: var(--month-cell-height);
+  gap: 0;
+  padding: 3px 0;
+  border-right: 0;
+  box-shadow: inset -1px 0 var(--line);
+}
+.month-overview .month-cell:nth-child(7n) { box-shadow: none; }
+.month-overview .month-date { height: 20px; flex: 0 0 20px; margin-inline-start: 3px; }
+.overview-bookings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: .875rem;
+  align-content: start;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
 .overview-booking {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 3px;
-  width: 100%;
-  height: .875rem;
+  min-width: 0;
+  margin: 0 3px;
   padding: 0 4px;
   overflow: hidden;
   border: 0;
@@ -263,6 +279,8 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
   line-height: 1;
   text-align: left;
 }
+.overview-booking.continues-previous { margin-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.overview-booking.continues-next { margin-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .overview-booking:hover { background: hsl(var(--hue) 75% 24%); }
 .overview-booking:focus-visible { outline: 1px solid white; outline-offset: -2px; }
 .overview-count { flex: 0 0 auto; font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -318,6 +336,24 @@ textarea { resize: vertical; }
 .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; padding-top: 4px; }
 .danger { color: #982b26; margin-right: auto; }
 
+fieldset { min-width: 0; margin: 0; padding: 8px 10px 10px; border: 1px solid var(--line); border-radius: 8px; }
+legend { padding: 0 4px; font-size: .94rem; font-weight: 650; }
+.choice-list { display: grid; gap: 2px 10px; overflow-y: auto; }
+.instrument-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 120px; }
+.employee-choices { max-height: 140px; margin-top: 6px; }
+.choice { display: flex; align-items: center; gap: 7px; min-height: 26px; font-size: .9rem; font-weight: 400; overflow-wrap: anywhere; }
+.choice input { flex: 0 0 1.05rem; width: 1.05rem; height: 1.05rem; min-height: 0; margin: 0; accent-color: var(--accent); }
+.employee-group h3 { margin: 4px 0 2px; color: var(--muted); font-size: .88rem; }
+.selection { margin: 5px 0 0; color: var(--muted); font-size: .88rem; overflow-wrap: anywhere; }
+.directory-content { display: grid; gap: 12px; margin-top: 12px; }
+dialog .directory-form { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; align-items: end; }
+.directory-form .wide, .directory-form .form-error { grid-column: 1 / -1; }
+.directory-people { display: grid; gap: 9px; padding-top: 12px; border-top: 1px solid var(--line); }
+.directory-people h3 { margin: 0; font-size: 1rem; }
+.directory-employees { display: grid; gap: 4px; max-height: 180px; overflow: auto; }
+.directory-employee { display: flex; justify-content: space-between; align-items: center; gap: 10px; overflow-wrap: anywhere; }
+.directory-employee .button { min-height: 32px; flex: 0 0 auto; }
+
 @media (max-width: 1000px) {
   .workspace { gap: 16px; grid-template-columns: 200px minmax(0, 1fr); }
 }
@@ -328,10 +364,10 @@ textarea { resize: vertical; }
   .workspace { display: block; padding: 14px; }
   .sidebar { margin-bottom: 20px; }
   .instruments { display: flex; flex-wrap: wrap; }
-  .add-instrument { width: auto; }
+  .add-instrument, .directory-button { width: auto; }
   .calendar { max-height: 68dvh; }
 }
-@media (max-width: 440px) {
+@media (max-width: 500px) {
   .brand-mark { display: none; }
   .calendar-header { align-items: stretch; flex-direction: column; }
   .view-picker { align-self: flex-start; }
