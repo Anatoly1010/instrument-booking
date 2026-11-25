@@ -1,0 +1,358 @@
+"use strict";
+
+const $ = (selector) => document.querySelector(selector);
+const calendar = $("#calendar");
+const datePicker = $("#calendar-date");
+const instrumentDialog = $("#instrument-dialog");
+const instrumentForm = $("#instrument-form");
+const bookingDialog = $("#booking-dialog");
+const bookingForm = $("#booking-form");
+const deleteButton = $("#delete-booking");
+const weekdayFormat = new Intl.DateTimeFormat("ru", { weekday: "short" });
+const dayFormat = new Intl.DateTimeFormat("ru", { dateStyle: "full" });
+const rangeFormat = new Intl.DateTimeFormat("ru", { day: "numeric", month: "long", year: "numeric" });
+const hues = [203, 158, 270, 24, 330, 47, 190];
+
+const state = {
+  date: new Date(),
+  view: "week",
+  instruments: [],
+  activeId: null,
+  bookings: [],
+  editingId: null,
+  requestId: 0,
+};
+
+function element(tag, className, content) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (content) node.textContent = content;
+  return node;
+}
+
+function pad(value) {
+  return String(value).padStart(2, "0");
+}
+
+function dateKey(date) {
+  return `${String(date.getFullYear()).padStart(4, "0")}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function fromKey(key) {
+  return new Date(`${key}T12:00`);
+}
+
+function addDays(date, count) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + count);
+  return result;
+}
+
+function visibleDays() {
+  if (state.view === "day") return [state.date];
+  const monday = addDays(state.date, -((state.date.getDay() + 6) % 7));
+  return Array.from({ length: 7 }, (_, index) => addDays(monday, index));
+}
+
+function setStatus(message = "") {
+  const status = $("#status");
+  status.textContent = message;
+  status.hidden = !message;
+}
+
+async function api(path, method = "GET", payload) {
+  let response;
+  try {
+    response = await fetch(`/api/${path}`, {
+      method,
+      headers: method === "GET" ? undefined : { "Content-Type": "application/json" },
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error("Сервер недоступен. Проверьте, что приложение запущено.");
+  }
+  if (response.status === 204) return;
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Не удалось выполнить запрос.");
+  return data;
+}
+
+function instrumentColor(id) {
+  return hues[(id - 1) % hues.length];
+}
+
+function renderInstruments() {
+  const items = state.instruments.map((instrument) => {
+    const button = element("button", "instrument");
+    button.type = "button";
+    button.dataset.id = instrument.id;
+    button.setAttribute("aria-pressed", String(instrument.id === state.activeId));
+    const swatch = element("span", "swatch");
+    swatch.setAttribute("aria-hidden", "true");
+    swatch.style.setProperty("--hue", instrumentColor(instrument.id));
+    button.append(swatch, element("span", "", instrument.name));
+    return button;
+  });
+  $("#instruments").replaceChildren(...items);
+}
+
+function minutes(timestamp) {
+  return Number(timestamp.slice(11, 13)) * 60 + Number(timestamp.slice(14, 16));
+}
+
+function clock(timestamp) {
+  return timestamp.slice(11, 16);
+}
+
+function renderEvent(booking, day, nextDay) {
+  const start = booking.start.slice(0, 10) < day ? 0 : minutes(booking.start);
+  const end = booking.end.slice(0, 10) >= nextDay ? 1440 : minutes(booking.end);
+  const timeLabel = `${start === 0 ? "00:00" : clock(booking.start)}–${end === 1440 ? "24:00" : clock(booking.end)}`;
+  const button = element("button", end - start < 40 ? "event compact" : "event");
+  button.type = "button";
+  button.dataset.booking = booking.id;
+  button.style.top = `${start / 14.4}%`;
+  button.style.height = `${(end - start) / 14.4}%`;
+  button.title = `${timeLabel} · ${booking.person}${booking.comment ? `\n${booking.comment}` : ""}`;
+  button.setAttribute("aria-label", `${timeLabel}, ${booking.person}. Открыть бронь`);
+  button.append(element("strong", "", booking.person), element("span", "", timeLabel));
+  return button;
+}
+
+function renderGrid(days, resetScroll) {
+  const previousScroll = calendar.scrollTop;
+  const previousLeft = calendar.scrollLeft;
+  calendar.style.setProperty("--days", days.length);
+  calendar.style.setProperty("--hue", instrumentColor(state.activeId));
+  calendar.dataset.view = state.view;
+  const headings = element("div", "day-headings");
+  const grid = element("div", "time-grid");
+  const hours = element("div", "hours");
+  const today = dateKey(new Date());
+  const bookings = state.bookings.filter((booking) => booking.instrument_id === state.activeId);
+
+  headings.append(element("div", "corner", "Время"));
+  for (let hour = 0; hour < 24; hour += 1) {
+    hours.append(element("span", "hour", `${pad(hour)}:00`));
+  }
+  grid.append(hours);
+
+  for (const date of days) {
+    const day = dateKey(date);
+    const nextDay = dateKey(addDays(date, 1));
+    const heading = element("div", day === today ? "date-heading today" : "date-heading", weekdayFormat.format(date));
+    const time = element("time", "", `${pad(date.getDate())}.${pad(date.getMonth() + 1)}`);
+    time.dateTime = day;
+    heading.append(time);
+    headings.append(heading);
+
+    const weekend = date.getDay() === 0 || date.getDay() === 6;
+    const column = element("div", weekend ? "calendar-day weekend" : "calendar-day");
+    const fullDate = dayFormat.format(date);
+    for (let hour = 0; hour < 24; hour += 1) {
+      const slot = element("button", "slot");
+      const timeLabel = `${pad(hour)}:00`;
+      slot.type = "button";
+      slot.dataset.start = `${day}T${timeLabel}`;
+      slot.setAttribute("aria-label", `${fullDate}, ${timeLabel}. Создать бронь`);
+      column.append(slot);
+    }
+    for (const booking of bookings) {
+      if (booking.start < `${nextDay}T00:00` && booking.end > `${day}T00:00`) {
+        column.append(renderEvent(booking, day, nextDay));
+      }
+    }
+    grid.append(column);
+  }
+
+  calendar.replaceChildren(headings, grid);
+  calendar.scrollTop = resetScroll ? hours.firstElementChild.offsetHeight * 8 : previousScroll;
+  calendar.scrollLeft = resetScroll ? 0 : previousLeft;
+}
+
+async function refreshCalendar(resetScroll = false) {
+  const requestId = ++state.requestId;
+  const instrument = state.instruments.find((item) => item.id === state.activeId);
+  const days = visibleDays();
+  const first = days[0];
+  const last = days.at(-1);
+  $("#calendar-title").textContent = instrument?.name || "Календарь";
+  $("#period").textContent = !instrument ? "" : days.length === 1
+    ? dayFormat.format(first)
+    : rangeFormat.formatRange(first, last);
+  datePicker.value = dateKey(state.date);
+  $("#new-booking").disabled = !instrument;
+  $("#empty").hidden = Boolean(instrument);
+  calendar.hidden = !instrument;
+  if (!instrument) return;
+
+  setStatus();
+  state.bookings = [];
+  renderGrid(days, resetScroll);
+  calendar.setAttribute("aria-busy", "true");
+  try {
+    const data = await api(`bookings?from=${dateKey(first)}&to=${dateKey(addDays(last, 1))}`);
+    if (requestId !== state.requestId) return;
+    state.bookings = data;
+    renderGrid(days, false);
+  } catch (error) {
+    if (requestId === state.requestId) setStatus(error.message);
+  } finally {
+    if (requestId === state.requestId) calendar.removeAttribute("aria-busy");
+  }
+}
+
+function formError(form, message = "") {
+  const target = form.querySelector(".form-error");
+  target.textContent = message;
+  target.hidden = !message;
+}
+
+async function submit(form, action) {
+  formError(form);
+  const buttons = Array.from(form.querySelectorAll("button"));
+  buttons.forEach((button) => { button.disabled = true; });
+  form.dataset.pending = "true";
+  try {
+    await action();
+  } catch (error) {
+    formError(form, error.message);
+  } finally {
+    delete form.dataset.pending;
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
+
+function openInstrumentForm() {
+  instrumentForm.reset();
+  formError(instrumentForm);
+  instrumentDialog.showModal();
+}
+
+function openBookingForm(booking, slotStart) {
+  if (state.activeId === null) return;
+  const start = booking?.start || slotStart || `${dateKey(state.date)}T09:00`;
+  const hour = Number(start.slice(11, 13));
+  const nextHour = hour === 23 ? `${dateKey(addDays(fromKey(start.slice(0, 10)), 1))}T00:00`
+    : `${start.slice(0, 10)}T${pad(hour + 1)}:00`;
+  const fields = bookingForm.elements;
+  state.editingId = booking?.id ?? null;
+  $("#booking-dialog-title").textContent = booking ? "Изменить бронь" : "Новая бронь";
+  deleteButton.hidden = !booking;
+  fields.instrument_id.replaceChildren(...state.instruments.map((item) => new Option(item.name, item.id)));
+  fields.instrument_id.value = booking?.instrument_id ?? state.activeId;
+  fields.start.value = start;
+  fields.end.value = booking?.end || nextHour;
+  fields.person.value = booking?.person || "";
+  fields.comment.value = booking?.comment || "";
+  formError(bookingForm);
+  bookingDialog.showModal();
+  fields.person.focus();
+}
+
+$("#instruments").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-id]");
+  if (!button || state.activeId === Number(button.dataset.id)) return;
+  state.activeId = Number(button.dataset.id);
+  for (const item of $("#instruments").children) {
+    item.setAttribute("aria-pressed", String(item === button));
+  }
+  refreshCalendar();
+});
+
+$("#new-instrument").addEventListener("click", openInstrumentForm);
+$("#empty-add").addEventListener("click", openInstrumentForm);
+$("#new-booking").addEventListener("click", () => openBookingForm());
+calendar.addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  if (button.dataset.start) openBookingForm(null, button.dataset.start);
+  if (button.dataset.booking) openBookingForm(state.bookings.find((booking) => booking.id === Number(button.dataset.booking)));
+});
+
+for (const button of document.querySelectorAll(".view-picker button")) {
+  button.addEventListener("click", () => {
+    state.view = button.dataset.view;
+    for (const item of button.parentElement.children) item.setAttribute("aria-pressed", String(item === button));
+    refreshCalendar();
+  });
+}
+
+for (const [selector, direction] of [["#previous", -1], ["#next", 1]]) {
+  $(selector).addEventListener("click", () => {
+    state.date = addDays(state.date, direction * (state.view === "week" ? 7 : 1));
+    refreshCalendar();
+  });
+}
+
+$("#today").addEventListener("click", () => {
+  state.date = new Date();
+  refreshCalendar(true);
+});
+
+datePicker.addEventListener("change", () => {
+  state.date = datePicker.value ? fromKey(datePicker.value) : new Date();
+  refreshCalendar();
+});
+
+for (const dialog of document.querySelectorAll("dialog")) {
+  for (const button of dialog.querySelectorAll("[data-close]")) {
+    button.addEventListener("click", () => dialog.close());
+  }
+  dialog.addEventListener("cancel", (event) => {
+    if (dialog.querySelector("form").dataset.pending) event.preventDefault();
+  });
+}
+
+instrumentForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submit(instrumentForm, async () => {
+    const item = await api("instruments", "POST", { name: instrumentForm.elements.name.value });
+    state.instruments.push(item);
+    state.activeId = item.id;
+    renderInstruments();
+    instrumentDialog.close();
+    refreshCalendar(true);
+  });
+});
+
+bookingForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submit(bookingForm, async () => {
+    const fields = new FormData(bookingForm);
+    const payload = Object.fromEntries(fields);
+    payload.instrument_id = Number(payload.instrument_id);
+    const editing = state.editingId !== null;
+    const booking = await api(editing ? `bookings/${state.editingId}` : "bookings", editing ? "PUT" : "POST", payload);
+    state.activeId = booking.instrument_id;
+    state.date = fromKey(booking.start.slice(0, 10));
+    renderInstruments();
+    bookingDialog.close();
+    refreshCalendar();
+  });
+});
+
+deleteButton.addEventListener("click", () => {
+  if (!window.confirm("Удалить эту бронь?")) return;
+  submit(bookingForm, async () => {
+    await api(`bookings/${state.editingId}`, "DELETE");
+    bookingDialog.close();
+    refreshCalendar();
+  });
+});
+
+async function start() {
+  $("#new-instrument").disabled = true;
+  try {
+    state.instruments = await api("instruments");
+    state.activeId = state.instruments[0]?.id ?? null;
+    renderInstruments();
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    $("#new-instrument").disabled = false;
+    refreshCalendar(true);
+  }
+}
+
+start();

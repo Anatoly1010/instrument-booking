@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Локальный календарь бронирования лабораторных приборов">
+  <title>Расписание приборов</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">▦</span><span>Расписание приборов</span></div>
+    <button id="new-booking" class="button primary" type="button" disabled><span aria-hidden="true">+</span> Новая бронь</button>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar" aria-labelledby="instruments-heading">
+      <h2 id="instruments-heading">Приборы</h2>
+      <div id="instruments" class="instruments"></div>
+      <button id="new-instrument" class="button add-instrument" type="button"><span aria-hidden="true">+</span> Добавить прибор</button>
+    </aside>
+
+    <main>
+      <div class="calendar-header">
+        <div>
+          <h1 id="calendar-title">Календарь</h1>
+          <p id="period" class="period"></p>
+        </div>
+        <div class="view-picker" role="group" aria-label="Вид календаря">
+          <button type="button" data-view="day" aria-pressed="false">День</button>
+          <button type="button" data-view="week" aria-pressed="true">Неделя</button>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="navigation" role="group" aria-label="Перейти к дате">
+          <button id="previous" class="button icon" type="button" aria-label="Предыдущий период">‹</button>
+          <button id="today" class="button" type="button">Сегодня</button>
+          <button id="next" class="button icon" type="button" aria-label="Следующий период">›</button>
+        </div>
+        <input id="calendar-date" type="date" aria-label="Выбрать дату">
+      </div>
+
+      <p id="status" class="status" role="status" hidden></p>
+      <section class="empty" id="empty" hidden>
+        <div class="empty-mark" aria-hidden="true">▦</div>
+        <h2>Добавьте первый прибор</h2>
+        <p>У каждого прибора будет свой календарь для бронирования времени.</p>
+        <button id="empty-add" class="button primary" type="button"><span aria-hidden="true">+</span> Добавить прибор</button>
+      </section>
+      <section id="calendar" class="calendar" aria-label="Сетка календаря" hidden></section>
+    </main>
+  </div>
+
+  <dialog id="instrument-dialog" aria-labelledby="instrument-dialog-title">
+    <form id="instrument-form">
+      <div class="dialog-header">
+        <h2 id="instrument-dialog-title">Добавить прибор</h2>
+        <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
+      </div>
+      <label>Название прибора
+        <input name="name" required maxlength="100" placeholder="Например, спектрометр" autofocus>
+      </label>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="button" data-close>Отмена</button>
+        <button type="submit" class="button primary">Добавить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="booking-dialog" aria-labelledby="booking-dialog-title">
+    <form id="booking-form">
+      <div class="dialog-header">
+        <h2 id="booking-dialog-title">Новая бронь</h2>
+        <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
+      </div>
+      <label>Прибор
+        <select name="instrument_id" required></select>
+      </label>
+      <div class="form-grid">
+        <label>Начало <input name="start" type="datetime-local" required></label>
+        <label>Окончание <input name="end" type="datetime-local" required></label>
+      </div>
+      <label>Кто бронирует <input name="person" maxlength="100" required></label>
+      <label>Комментарий <textarea name="comment" maxlength="1000" rows="3"></textarea></label>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="delete-booking" class="button danger" type="button" hidden>Удалить бронь</button>
+        <button type="button" class="button" data-close>Закрыть</button>
+        <button type="submit" class="button primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
