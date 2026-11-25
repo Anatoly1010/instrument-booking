@@ -84,6 +84,7 @@ h1, h2, p { margin: 0; }
 }
 .instrument:hover { background: #f4f7fa; }
 .instrument[aria-pressed="true"] { background: #eaf3fa; color: #123c60; border-color: #d8e8f6; font-weight: 650; }
+.all-instruments { font-weight: 650; }
 .swatch { flex: 0 0 10px; height: 10px; border-radius: 3px; background: hsl(var(--hue) 54% 39%); }
 .add-instrument { margin-top: 10px; width: 100%; color: #144d76; }
 
@@ -173,6 +174,60 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
 .event strong, .event span { width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .event span { font-size: .8rem; }
 .event.compact { display: block; line-height: 1; }
+
+.month-headings, .month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(104px, 1fr));
+  min-width: 728px;
+}
+.month-headings { position: sticky; top: 0; z-index: 3; }
+.month-headings .date-heading { text-transform: capitalize; }
+.month-headings .date-heading:first-child { border-left: 0; }
+.month-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+  min-height: 94px;
+  padding: 5px;
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+.month-cell:nth-child(7n) { border-right: 0; }
+.month-cell:nth-child(7n + 6), .month-cell:nth-child(7n) { background: #f7f9fc; }
+.month-cell.outside-month { background: #edf2f7; }
+.month-cell.today { background: #eaf3fa; }
+.month-date {
+  align-self: flex-start;
+  min-width: 29px;
+  height: 29px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: .9rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.today .month-date { background: #114e78; color: white; }
+.month-cell:not(.today) .month-date:hover { background: #dceaf5; }
+.month-event {
+  display: grid;
+  gap: 2px;
+  padding: 4px 5px;
+  border: 1px solid hsl(var(--hue) 46% 75%);
+  border-left: 3px solid hsl(var(--hue) 54% 38%);
+  border-radius: 5px;
+  background: hsl(var(--hue) 63% 91%);
+  color: hsl(var(--hue) 52% 22%);
+  text-align: left;
+  font-size: .88rem;
+  line-height: 1.2;
+}
+.month-event:hover { background: hsl(var(--hue) 62% 86%); }
+.month-event strong { overflow-wrap: anywhere; }
+.month-event-time { font-size: .8rem; font-variant-numeric: tabular-nums; }
 
 .empty {
   display: grid;

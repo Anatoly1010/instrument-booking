@@ -11,6 +11,7 @@ const deleteButton = $("#delete-booking");
 const weekdayFormat = new Intl.DateTimeFormat("ru", { weekday: "short" });
 const dayFormat = new Intl.DateTimeFormat("ru", { dateStyle: "full" });
 const rangeFormat = new Intl.DateTimeFormat("ru", { day: "numeric", month: "long", year: "numeric" });
+const monthFormat = new Intl.DateTimeFormat("ru", { month: "long", year: "numeric" });
 const hues = [203, 158, 270, 24, 330, 47, 190];
 
 const state = {
@@ -18,6 +19,7 @@ const state = {
   view: "week",
   instruments: [],
   activeId: null,
+  allInstruments: false,
   bookings: [],
   editingId: null,
   requestId: 0,
@@ -48,9 +50,25 @@ function addDays(date, count) {
   return result;
 }
 
+function firstOfMonth(date, offset = 0) {
+  const result = new Date(date);
+  result.setDate(1);
+  result.setMonth(result.getMonth() + offset);
+  return result;
+}
+
+function mondayOffset(date) {
+  return (date.getDay() + 6) % 7;
+}
+
 function visibleDays() {
   if (state.view === "day") return [state.date];
-  const monday = addDays(state.date, -((state.date.getDay() + 6) % 7));
+  if (state.view === "month") {
+    const first = firstOfMonth(state.date);
+    const count = addDays(firstOfMonth(state.date, 1), -1).getDate();
+    return Array.from({ length: count }, (_, index) => addDays(first, index));
+  }
+  const monday = addDays(state.date, -mondayOffset(state.date));
   return Array.from({ length: 7 }, (_, index) => addDays(monday, index));
 }
 
@@ -86,14 +104,37 @@ function renderInstruments() {
     const button = element("button", "instrument");
     button.type = "button";
     button.dataset.id = instrument.id;
-    button.setAttribute("aria-pressed", String(instrument.id === state.activeId));
     const swatch = element("span", "swatch");
     swatch.setAttribute("aria-hidden", "true");
     swatch.style.setProperty("--hue", instrumentColor(instrument.id));
     button.append(swatch, element("span", "", instrument.name));
     return button;
   });
+  if (items.length) {
+    const all = element("button", "instrument all-instruments", "Все приборы");
+    all.type = "button";
+    all.dataset.id = "all";
+    items.unshift(all);
+  }
   $("#instruments").replaceChildren(...items);
+  markInstrumentSelection();
+}
+
+function markInstrumentSelection() {
+  const active = state.allInstruments ? "all" : String(state.activeId);
+  for (const button of $("#instruments").children) {
+    button.setAttribute("aria-pressed", String(button.dataset.id === active));
+  }
+}
+
+function setView(view) {
+  state.view = view;
+  if (view !== "month") state.allInstruments = false;
+  for (const button of document.querySelectorAll(".view-picker button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.view === view));
+  }
+  markInstrumentSelection();
+  refreshCalendar(true);
 }
 
 function minutes(timestamp) {
@@ -104,10 +145,19 @@ function clock(timestamp) {
   return timestamp.slice(11, 16);
 }
 
-function renderEvent(booking, day, nextDay) {
+function daySegment(booking, day, nextDay) {
   const start = booking.start.slice(0, 10) < day ? 0 : minutes(booking.start);
   const end = booking.end.slice(0, 10) >= nextDay ? 1440 : minutes(booking.end);
-  const timeLabel = `${start === 0 ? "00:00" : clock(booking.start)}–${end === 1440 ? "24:00" : clock(booking.end)}`;
+  const label = `${start === 0 ? "00:00" : clock(booking.start)}–${end === 1440 ? "24:00" : clock(booking.end)}`;
+  return { start, end, label };
+}
+
+function bookingsOnDay(bookings, day, nextDay) {
+  return bookings.filter((booking) => booking.start < `${nextDay}T00:00` && booking.end > `${day}T00:00`);
+}
+
+function renderEvent(booking, day, nextDay) {
+  const { start, end, label: timeLabel } = daySegment(booking, day, nextDay);
   const button = element("button", end - start < 40 ? "event compact" : "event");
   button.type = "button";
   button.dataset.booking = booking.id;
@@ -119,17 +169,13 @@ function renderEvent(booking, day, nextDay) {
   return button;
 }
 
-function renderGrid(days, resetScroll) {
-  const previousScroll = calendar.scrollTop;
-  const previousLeft = calendar.scrollLeft;
+function renderTimeGrid(days, bookings) {
   calendar.style.setProperty("--days", days.length);
   calendar.style.setProperty("--hue", instrumentColor(state.activeId));
-  calendar.dataset.view = state.view;
   const headings = element("div", "day-headings");
   const grid = element("div", "time-grid");
   const hours = element("div", "hours");
   const today = dateKey(new Date());
-  const bookings = state.bookings.filter((booking) => booking.instrument_id === state.activeId);
 
   headings.append(element("div", "corner", "Время"));
   for (let hour = 0; hour < 24; hour += 1) {
@@ -157,16 +203,70 @@ function renderGrid(days, resetScroll) {
       slot.setAttribute("aria-label", `${fullDate}, ${timeLabel}. Создать бронь`);
       column.append(slot);
     }
-    for (const booking of bookings) {
-      if (booking.start < `${nextDay}T00:00` && booking.end > `${day}T00:00`) {
-        column.append(renderEvent(booking, day, nextDay));
-      }
+    for (const booking of bookingsOnDay(bookings, day, nextDay)) {
+      column.append(renderEvent(booking, day, nextDay));
     }
     grid.append(column);
   }
 
   calendar.replaceChildren(headings, grid);
-  calendar.scrollTop = resetScroll ? hours.firstElementChild.offsetHeight * 8 : previousScroll;
+}
+
+function renderMonth(days, bookings) {
+  const headings = element("div", "month-headings");
+  const grid = element("div", "month-grid");
+  const today = dateKey(new Date());
+  const names = new Map(state.instruments.map(({ id, name }) => [id, name]));
+  const offset = mondayOffset(days[0]);
+  const monday = addDays(days[0], -offset);
+  for (let index = 0; index < 7; index += 1) {
+    headings.append(element("div", "date-heading", weekdayFormat.format(addDays(monday, index))));
+  }
+
+  const cellCount = Math.ceil((offset + days.length) / 7) * 7;
+  for (let index = 0; index < cellCount; index += 1) {
+    const date = days[index - offset];
+    if (!date) {
+      const blank = element("div", "month-cell outside-month");
+      blank.setAttribute("aria-hidden", "true");
+      grid.append(blank);
+      continue;
+    }
+
+    const day = dateKey(date);
+    const nextDay = dateKey(addDays(date, 1));
+    const cell = element("div", day === today ? "month-cell today" : "month-cell");
+    const dayButton = element("button", "month-date", String(date.getDate()));
+    dayButton.type = "button";
+    dayButton.dataset.start = `${day}T09:00`;
+    dayButton.setAttribute("aria-label", `${dayFormat.format(date)}. Создать бронь`);
+    cell.append(dayButton);
+    for (const booking of bookingsOnDay(bookings, day, nextDay)) {
+      const name = names.get(booking.instrument_id);
+      const label = daySegment(booking, day, nextDay).label;
+      const event = element("button", "month-event");
+      event.type = "button";
+      event.dataset.booking = booking.id;
+      event.style.setProperty("--hue", instrumentColor(booking.instrument_id));
+      event.title = `${label} · ${name} · ${booking.person}`;
+      event.setAttribute("aria-label", `${label}, ${name}, ${booking.person}. Открыть бронь`);
+      event.append(element("span", "month-event-time", label), element("strong", "", state.allInstruments ? name : booking.person));
+      cell.append(event);
+    }
+    grid.append(cell);
+  }
+  calendar.replaceChildren(headings, grid);
+}
+
+function renderCalendar(days, resetScroll) {
+  const previousScroll = calendar.scrollTop;
+  const previousLeft = calendar.scrollLeft;
+  const bookings = state.allInstruments ? state.bookings
+    : state.bookings.filter((booking) => booking.instrument_id === state.activeId);
+  calendar.dataset.view = state.view;
+  if (state.view === "month") renderMonth(days, bookings);
+  else renderTimeGrid(days, bookings);
+  calendar.scrollTop = resetScroll ? (calendar.querySelector(".hour")?.offsetHeight ?? 0) * 8 : previousScroll;
   calendar.scrollLeft = resetScroll ? 0 : previousLeft;
 }
 
@@ -176,10 +276,14 @@ async function refreshCalendar(resetScroll = false) {
   const days = visibleDays();
   const first = days[0];
   const last = days.at(-1);
-  $("#calendar-title").textContent = instrument?.name || "Календарь";
-  $("#period").textContent = !instrument ? "" : days.length === 1
-    ? dayFormat.format(first)
-    : rangeFormat.formatRange(first, last);
+  $("#calendar-title").textContent = state.allInstruments ? "Все приборы" : instrument?.name || "Календарь";
+  let period = "";
+  if (instrument) {
+    if (state.view === "month") period = monthFormat.format(first);
+    else if (state.view === "day") period = dayFormat.format(first);
+    else period = rangeFormat.formatRange(first, last);
+  }
+  $("#period").textContent = period;
   datePicker.value = dateKey(state.date);
   $("#new-booking").disabled = !instrument;
   $("#empty").hidden = Boolean(instrument);
@@ -188,13 +292,13 @@ async function refreshCalendar(resetScroll = false) {
 
   setStatus();
   state.bookings = [];
-  renderGrid(days, resetScroll);
+  renderCalendar(days, resetScroll);
   calendar.setAttribute("aria-busy", "true");
   try {
     const data = await api(`bookings?from=${dateKey(first)}&to=${dateKey(addDays(last, 1))}`);
     if (requestId !== state.requestId) return;
     state.bookings = data;
-    renderGrid(days, false);
+    renderCalendar(days, false);
   } catch (error) {
     if (requestId === state.requestId) setStatus(error.message);
   } finally {
@@ -252,11 +356,14 @@ function openBookingForm(booking, slotStart) {
 
 $("#instruments").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-id]");
-  if (!button || state.activeId === Number(button.dataset.id)) return;
-  state.activeId = Number(button.dataset.id);
-  for (const item of $("#instruments").children) {
-    item.setAttribute("aria-pressed", String(item === button));
+  if (!button || button.getAttribute("aria-pressed") === "true") return;
+  state.allInstruments = button.dataset.id === "all";
+  if (state.allInstruments) {
+    setView("month");
+    return;
   }
+  state.activeId = Number(button.dataset.id);
+  markInstrumentSelection();
   refreshCalendar();
 });
 
@@ -271,17 +378,15 @@ calendar.addEventListener("click", (event) => {
 });
 
 for (const button of document.querySelectorAll(".view-picker button")) {
-  button.addEventListener("click", () => {
-    state.view = button.dataset.view;
-    for (const item of button.parentElement.children) item.setAttribute("aria-pressed", String(item === button));
-    refreshCalendar();
-  });
+  button.addEventListener("click", () => setView(button.dataset.view));
 }
 
 for (const [selector, direction] of [["#previous", -1], ["#next", 1]]) {
   $(selector).addEventListener("click", () => {
-    state.date = addDays(state.date, direction * (state.view === "week" ? 7 : 1));
-    refreshCalendar();
+    const monthView = state.view === "month";
+    state.date = monthView ? firstOfMonth(state.date, direction)
+      : addDays(state.date, direction * (state.view === "week" ? 7 : 1));
+    refreshCalendar(monthView);
   });
 }
 
@@ -310,6 +415,7 @@ instrumentForm.addEventListener("submit", (event) => {
     const item = await api("instruments", "POST", { name: instrumentForm.elements.name.value });
     state.instruments.push(item);
     state.activeId = item.id;
+    state.allInstruments = false;
     renderInstruments();
     instrumentDialog.close();
     refreshCalendar(true);
