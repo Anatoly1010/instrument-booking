@@ -35,8 +35,8 @@
         </div>
         <div class="view-picker" role="group" aria-label="Вид календаря">
           <button type="button" data-view="day" aria-pressed="false">День</button>
-          <button type="button" data-view="week" aria-pressed="true">Неделя</button>
-          <button type="button" data-view="month" aria-pressed="false">Месяц</button>
+          <button type="button" data-view="week" aria-pressed="false">Неделя</button>
+          <button type="button" data-view="month" aria-pressed="true">Месяц</button>
           <button type="button" data-view="rolling" aria-pressed="false">4 недели</button>
         </div>
       </div>
@@ -47,7 +47,8 @@
           <button id="today" class="button" type="button">Сегодня</button>
           <button id="next" class="button icon" type="button" aria-label="Следующий период">›</button>
         </div>
-        <input id="calendar-date" type="date" aria-label="Выбрать дату">
+        <input id="calendar-date" type="hidden">
+        <button class="button picker-trigger" type="button" data-pick="calendar-date" data-label="Выбрать дату" aria-haspopup="dialog">Выбрать дату</button>
       </div>
 
       <p id="status" class="status" role="status" hidden></p>
@@ -143,8 +144,16 @@
         <div id="booking-resonators" class="choice-list resonator-choices"></div>
       </fieldset>
       <div class="form-grid">
-        <label>Начало <input name="start" type="datetime-local" required></label>
-        <label>Окончание <input name="end" type="datetime-local" required></label>
+        <div class="booking-date-field">
+          <span>Начало</span>
+          <input id="booking-start" name="start" type="hidden">
+          <button class="button picker-trigger" type="button" data-pick="booking-start" data-label="Начало" data-time aria-haspopup="dialog">Выбрать начало</button>
+        </div>
+        <div class="booking-date-field">
+          <span>Окончание</span>
+          <input id="booking-end" name="end" type="hidden">
+          <button class="button picker-trigger" type="button" data-pick="booking-end" data-label="Окончание" data-time aria-haspopup="dialog">Выбрать окончание</button>
+        </div>
       </div>
       <fieldset>
         <legend>Сотрудники</legend>
@@ -161,6 +170,31 @@
         <button type="submit" class="button primary">Сохранить</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="date-time-picker" aria-labelledby="picker-title">
+    <div class="dialog-header">
+      <h2 id="picker-title">Выбрать дату</h2>
+      <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
+    </div>
+    <div class="picker-navigation">
+      <button id="picker-previous" class="button" type="button" aria-label="Предыдущий месяц">Назад</button>
+      <strong id="picker-month" aria-live="polite"></strong>
+      <button id="picker-next" class="button" type="button" aria-label="Следующий месяц">Вперёд</button>
+    </div>
+    <div class="picker-weekdays" aria-hidden="true">
+      <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span>
+    </div>
+    <div id="picker-days" class="picker-days" aria-label="Дни месяца"></div>
+    <section id="picker-time-fields" class="picker-time-fields" aria-labelledby="picker-time-heading" hidden>
+      <h3 id="picker-time-heading">Время</h3>
+      <div id="picker-times" class="picker-times" aria-label="Выбрать время"></div>
+      <form id="picker-exact" class="picker-exact">
+        <label>Точное время <input id="picker-exact-time" type="text" inputmode="numeric" maxlength="5" placeholder="ЧЧ:ММ"></label>
+        <button class="button primary" type="submit">Выбрать</button>
+        <p id="picker-error" class="form-error" role="alert" hidden></p>
+      </form>
+    </section>
   </dialog>
 </body>
 </html>

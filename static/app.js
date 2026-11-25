@@ -3,6 +3,9 @@
 const $ = (selector) => document.querySelector(selector);
 const calendar = $("#calendar");
 const datePicker = $("#calendar-date");
+const dateTimePicker = $("#date-time-picker");
+const pickerTriggers = Array.from(document.querySelectorAll("[data-pick]"));
+const pickerTimeInput = $("#picker-exact-time");
 const instrumentDialog = $("#instrument-dialog");
 const instrumentForm = $("#instrument-form");
 const instrumentName = instrumentForm.elements.namedItem("name");
@@ -24,11 +27,12 @@ const weekdayFormat = new Intl.DateTimeFormat("ru", { weekday: "short" });
 const dayFormat = new Intl.DateTimeFormat("ru", { dateStyle: "full" });
 const rangeFormat = new Intl.DateTimeFormat("ru", { day: "numeric", month: "long", year: "numeric" });
 const monthFormat = new Intl.DateTimeFormat("ru", { month: "long", year: "numeric" });
+const shortDateFormat = new Intl.DateTimeFormat("ru", { dateStyle: "short" });
 const hues = [145, 183, 268, 23, 332, 45, 216];
 
 const state = {
   date: new Date(),
-  view: "week",
+  view: "month",
   instruments: [],
   resonators: [],
   labs: [],
@@ -42,6 +46,8 @@ const state = {
   editingId: null,
   requestId: 0,
 };
+
+const picker = { input: null, withTime: false, day: "", month: null, time: "" };
 
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -77,6 +83,91 @@ function firstOfMonth(date, offset = 0) {
 
 function mondayOffset(date) {
   return (date.getDay() + 6) % 7;
+}
+
+function setDateControl(input, value) {
+  input.value = value;
+  const trigger = pickerTriggers.find((button) => button.dataset.pick === input.id);
+  const date = value ? shortDateFormat.format(fromKey(value.slice(0, 10))) : "";
+  const text = date && value.length > 10 ? `${date}, ${value.slice(11, 16)}` : date;
+  trigger.textContent = text || trigger.dataset.label;
+  trigger.setAttribute("aria-label", text ? `${trigger.dataset.label}, ${text}` : trigger.dataset.label);
+}
+
+function pickerError(message = "") {
+  const error = $("#picker-error");
+  error.textContent = message;
+  error.hidden = !message;
+}
+
+function renderPickerDays() {
+  const minimum = picker.input.dataset.min?.slice(0, 10);
+  const currentMonth = dateKey(picker.month).slice(0, 7);
+  const next = firstOfMonth(picker.month, 1);
+  const count = addDays(next, -1).getDate();
+  const today = dateKey(new Date());
+  $("#picker-month").textContent = monthFormat.format(picker.month);
+  $("#picker-previous").disabled = picker.month.getFullYear() === 1 && picker.month.getMonth() === 0
+    || Boolean(minimum && currentMonth <= minimum.slice(0, 7));
+  $("#picker-next").disabled = next.getFullYear() > 9999;
+
+  const days = Array.from({ length: mondayOffset(picker.month) }, () => element("span"));
+  for (let index = 0; index < count; index += 1) {
+    const date = addDays(picker.month, index);
+    const day = dateKey(date);
+    const button = element("button", day === today ? "picker-option picker-today" : "picker-option", String(index + 1));
+    button.type = "button";
+    button.dataset.pickerDay = day;
+    button.disabled = Boolean(minimum && day < minimum);
+    button.setAttribute("aria-label", dayFormat.format(date));
+    button.setAttribute("aria-pressed", String(day === picker.day));
+    days.push(button);
+  }
+  $("#picker-days").replaceChildren(...days);
+}
+
+function renderPickerTimes() {
+  const minimum = picker.input.dataset.min;
+  const buttons = Array.from({ length: 48 }, (_, index) => {
+    const time = `${pad(Math.floor(index / 2))}:${index % 2 ? "30" : "00"}`;
+    const button = element("button", "picker-option", time);
+    button.type = "button";
+    button.dataset.pickerTime = time;
+    button.disabled = Boolean(minimum && `${picker.day}T${time}` < minimum);
+    button.setAttribute("aria-pressed", String(time === picker.time));
+    return button;
+  });
+  const list = $("#picker-times");
+  list.replaceChildren(...buttons);
+  const current = buttons.find((button) => button.dataset.pickerTime >= picker.time && !button.disabled);
+  list.scrollTop = current ? Math.max(0, current.offsetTop - list.clientHeight / 2) : list.scrollHeight;
+}
+
+function acceptPickerValue(value) {
+  if (picker.input.dataset.min && value < picker.input.dataset.min) {
+    pickerError("Окончание должно быть позже начала.");
+    return;
+  }
+  setDateControl(picker.input, value);
+  dateTimePicker.close();
+  picker.input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function openDateTimePicker(trigger) {
+  picker.input = document.getElementById(trigger.dataset.pick);
+  picker.withTime = trigger.hasAttribute("data-time");
+  const value = picker.input.value || picker.input.dataset.min || dateKey(new Date());
+  picker.day = value.slice(0, 10);
+  picker.month = firstOfMonth(fromKey(picker.day));
+  picker.time = value.slice(11, 16) || "09:00";
+  $("#picker-title").textContent = trigger.dataset.label;
+  $("#picker-time-fields").hidden = !picker.withTime;
+  pickerTimeInput.value = picker.time;
+  pickerError();
+  renderPickerDays();
+  dateTimePicker.showModal();
+  if (picker.withTime) renderPickerTimes();
+  $("#picker-days button[aria-pressed='true']:not(:disabled)")?.focus();
 }
 
 function isOverview(view) {
@@ -417,7 +508,7 @@ async function refreshCalendar(resetScroll = false) {
     else period = rangeFormat.formatRange(first, last);
   }
   $("#period").textContent = period;
-  datePicker.value = dateKey(state.date);
+  setDateControl(datePicker, dateKey(state.date));
   $("#new-booking").disabled = !instrument;
   $("#empty").hidden = Boolean(instrument);
   calendar.hidden = !instrument;
@@ -628,10 +719,10 @@ function openBookingForm(booking, slotStart) {
   $("#booking-dialog-title").textContent = booking ? "Изменить бронь" : "Новая бронь";
   cancelBookingButton.hidden = !booking;
   fillBookingChoices(booking);
-  bookingStart.value = start;
+  setDateControl(bookingStart, start);
   bookingStart.dataset.initial = start;
-  bookingEnd.min = shiftTime(start, 60000);
-  bookingEnd.value = end;
+  bookingEnd.dataset.min = shiftTime(start, 60000);
+  setDateControl(bookingEnd, end);
   fields.person.value = booking?.person || "";
   fields.comment.value = booking?.comment || "";
   formError(bookingForm);
@@ -669,8 +760,8 @@ bookingStart.addEventListener("change", () => {
   const start = bookingStart.value;
   if (!start) return;
   const duration = Date.parse(`${bookingEnd.value}Z`) - Date.parse(`${bookingStart.dataset.initial}Z`);
-  bookingEnd.min = shiftTime(start, 60000);
-  bookingEnd.value = shiftTime(start, duration > 0 ? duration : 3600000);
+  bookingEnd.dataset.min = shiftTime(start, 60000);
+  setDateControl(bookingEnd, shiftTime(start, duration > 0 ? duration : 3600000));
   bookingStart.dataset.initial = start;
 });
 $("#manage-directory").addEventListener("click", () => {
@@ -718,6 +809,42 @@ $("#today").addEventListener("click", () => {
 datePicker.addEventListener("change", () => {
   state.date = datePicker.value ? fromKey(datePicker.value) : new Date();
   refreshCalendar();
+});
+
+for (const trigger of pickerTriggers) {
+  trigger.addEventListener("click", () => openDateTimePicker(trigger));
+}
+for (const [selector, delta] of [["#picker-previous", -1], ["#picker-next", 1]]) {
+  $(selector).addEventListener("click", () => {
+    picker.month = firstOfMonth(picker.month, delta);
+    renderPickerDays();
+  });
+}
+$("#picker-days").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-picker-day]");
+  if (!button) return;
+  picker.day = button.dataset.pickerDay;
+  if (!picker.withTime) {
+    acceptPickerValue(picker.day);
+    return;
+  }
+  $("#picker-days button[aria-pressed='true']")?.setAttribute("aria-pressed", "false");
+  button.setAttribute("aria-pressed", "true");
+  pickerError();
+  renderPickerTimes();
+});
+$("#picker-times").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-picker-time]");
+  if (button && !button.disabled) acceptPickerValue(`${picker.day}T${button.dataset.pickerTime}`);
+});
+$("#picker-exact").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const match = /^([0-9]{1,2}):?([0-9]{2})$/.exec(pickerTimeInput.value.trim());
+  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) {
+    pickerError("Введите время в формате ЧЧ:ММ.");
+    return;
+  }
+  acceptPickerValue(`${picker.day}T${pad(Number(match[1]))}:${match[2]}`);
 });
 
 for (const dialog of document.querySelectorAll("dialog")) {
@@ -826,6 +953,7 @@ async function start() {
     $("#manage-directory").disabled = false;
     $("#manage-resonators").disabled = false;
     state.activeId = state.instruments[0]?.id ?? null;
+    state.allInstruments = state.activeId !== null;
     renderInstruments();
   } catch (error) {
     setStatus(error.message);

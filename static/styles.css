@@ -110,6 +110,8 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
 .toolbar { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 13px; }
 .navigation { display: flex; gap: 6px; }
 .icon { min-width: 40px; padding: 0; font-size: 1.45rem; line-height: 1; }
+.picker-trigger { display: flex; justify-content: space-between; align-items: center; gap: 10px; text-align: left; font-variant-numeric: tabular-nums; }
+.picker-trigger::after { content: "▦"; color: var(--accent); font-size: 1.06rem; }
 
 .calendar {
   max-height: calc(100dvh - 230px);
@@ -305,6 +307,7 @@ input, select, textarea {
 }
 textarea { resize: vertical; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.booking-date-field { display: grid; gap: 5px; font-size: .94rem; font-weight: 600; }
 .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; padding-top: 4px; }
 .danger { color: #982b26; margin-right: auto; }
 
@@ -327,6 +330,32 @@ dialog .directory-form { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; a
 .directory-employee { display: flex; justify-content: space-between; align-items: center; gap: 10px; overflow-wrap: anywhere; }
 .directory-employee .button { min-height: 32px; flex: 0 0 auto; }
 
+#date-time-picker { width: min(100% - 24px, 420px); padding: 16px; }
+#date-time-picker::backdrop { background: #193b2a50; }
+.picker-navigation { display: flex; justify-content: space-between; align-items: center; gap: 4px; margin: 8px 0 10px; }
+.picker-navigation .button { min-height: 34px; padding: 4px 8px; }
+#picker-month { text-transform: capitalize; text-align: center; }
+.picker-weekdays, .picker-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+.picker-weekdays { margin-bottom: 4px; color: var(--muted); font-size: .86rem; text-align: center; }
+.picker-option {
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0 3px;
+  background: var(--subtle);
+  color: var(--text);
+  font-size: .875rem;
+  font-variant-numeric: tabular-nums;
+}
+.picker-option:not(:disabled):hover { background: var(--highlight); }
+.picker-option[aria-pressed="true"], .picker-option[aria-pressed="true"]:not(:disabled):hover { background: var(--accent); color: white; }
+.picker-today { border-color: var(--accent); }
+.picker-time-fields { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.picker-time-fields h3 { margin: 0 0 6px; font-size: .95rem; }
+.picker-times { position: relative; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 3px; max-height: 104px; overflow-y: auto; padding: 2px; }
+dialog .picker-exact { grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 7px; margin-top: 9px; }
+.picker-exact .form-error { grid-column: 1 / -1; }
+
 @media (max-width: 1000px) {
   .workspace { gap: 16px; grid-template-columns: 200px minmax(0, 1fr); }
 }
@@ -346,4 +375,8 @@ dialog .directory-form { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; a
   .view-picker { align-self: flex-start; }
   .form-grid { grid-template-columns: 1fr; }
   .resonator-choices { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 360px) {
+  .picker-times { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
