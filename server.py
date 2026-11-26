@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
+import ssl
 from threading import Lock
 from time import monotonic
 from urllib.parse import parse_qs, urlsplit
@@ -561,16 +562,16 @@ class Handler(BaseHTTPRequestHandler):
     def dispatch(self):
         self.session_cookie = None
         try:
-            network = self.server.view_network
+            network = self.server.lan_network
             if network is not None and IPv4Address(self.client_address[0]) not in network:
-                raise ApiError(403, "Просмотр доступен из локальной подсети.")
+                raise ApiError(403, "Расписание доступно из локальной подсети.")
             host = self.headers.get("Host", "").lower()
             if host not in self.server.allowed_hosts:
                 raise ApiError(403, "Откройте приложение по локальному адресу сервера.")
-            if network is not None and self.command != "GET":
+            if self.server.read_only and self.command != "GET":
                 raise ApiError(403, "Этот экземпляр доступен только для просмотра.")
             origin = self.headers.get("Origin")
-            if self.command != "GET" and origin is not None and origin != f"http://{host}":
+            if self.command != "GET" and origin is not None and origin != f"{self.server.scheme}://{host}":
                 raise ApiError(403, "Запрос с другого сайта отклонён.")
             url = urlsplit(self.path)
             if self.command == "GET" and url.path in ASSETS:
@@ -595,7 +596,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api(self, db, url):
         method, path = self.command, url.path
-        read_only = self.server.view_network is not None
+        read_only = self.server.read_only
         token = None if read_only else self.session_token()
         sessions = self.server.sessions
         account = sessions.account(token, db) if token else None
@@ -712,7 +713,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def set_session_cookie(self, token, max_age):
         name = self.server.session_cookie_name
-        self.session_cookie = f"{name}={token}; Max-Age={max_age}; Path=/api; HttpOnly; SameSite=Strict"
+        secure = "; Secure" if self.server.scheme == "https" else ""
+        self.session_cookie = f"{name}={token}; Max-Age={max_age}; Path=/api; HttpOnly; SameSite=Strict{secure}"
 
     def read_json(self):
         if self.headers.get_content_type() != "application/json":
@@ -789,22 +791,45 @@ def lan_interface(value):
     return interface
 
 
-def create_server(port, db_path, lan_view=None):
+class HttpsServer(ThreadingHTTPServer):
+    def __init__(self, address, tls_context):
+        self.tls_context = tls_context
+        super().__init__(address, Handler)
+
+    def process_request_thread(self, request, client_address):
+        # Run the handshake in the request thread so it cannot stall other clients.
+        request.settimeout(10)
+        try:
+            connection = self.tls_context.wrap_socket(request, server_side=True)
+        except OSError:
+            self.close_request(request)
+            return
+        super().process_request_thread(connection, client_address)
+
+
+def create_server(port, db_path, lan_view=None, *, lan_edit=None, tls_context=None):
+    if (lan_edit is None) != (tls_context is None) or (lan_view is not None and lan_edit is not None):
+        raise ValueError("Для редактирования по локальной сети нужен HTTPS.")
     db_path = Path(db_path).resolve()
+    lan = lan_view or lan_edit
+    if lan is not None and not db_path.is_file():
+        raise FileNotFoundError(f"База данных не найдена: {db_path}")
     if lan_view is None:
         initialize_database(db_path)
-    elif not db_path.is_file():
-        raise FileNotFoundError(f"База данных не найдена: {db_path}")
-    host = str(lan_view.ip) if lan_view is not None else "127.0.0.1"
-    server = ThreadingHTTPServer((host, port), Handler)
-    server.view_network = lan_view.network if lan_view is not None else None
-    mode = "ro" if lan_view is not None else "rw"
+    host = str(lan.ip) if lan is not None else "127.0.0.1"
+    address = host, port
+    server = HttpsServer(address, tls_context) if tls_context is not None else ThreadingHTTPServer(address, Handler)
+    server.scheme = "https" if tls_context is not None else "http"
+    server.lan_network = lan.network if lan is not None else None
+    server.read_only = lan_view is not None
+    mode = "ro" if server.read_only else "rw"
     server.db_uri = f"{db_path.as_uri()}?mode={mode}"
     server.sessions = Sessions()
     server.session_cookie_name = f"booking_session_{server.server_port}"
-    suffix = "" if server.server_port == 80 else f":{server.server_port}"
+    default_port = 443 if server.scheme == "https" else 80
+    suffix = "" if server.server_port == default_port else f":{server.server_port}"
     server.allowed_hosts = {f"{host}{suffix}"}
-    if lan_view is None:
+    if lan is None:
         server.allowed_hosts.add(f"localhost{suffix}")
     return server
 
@@ -828,7 +853,21 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--set-admin-password", action="store_true", help="set or replace the local administrator password")
     mode.add_argument("--lan-view", type=lan_interface, metavar="IP/PREFIX", help="serve an existing database read-only on a private IPv4 subnet")
+    mode.add_argument("--lan-edit", type=lan_interface, metavar="IP/PREFIX", help="serve an existing database over HTTPS on a private IPv4 subnet")
+    parser.add_argument("--tls-cert", type=Path, help="server certificate and optional chain in PEM format for --lan-edit")
+    parser.add_argument("--tls-key", type=Path, help="private key in PEM format for --lan-edit")
     args = parser.parse_args()
+    tls_context = None
+    if args.lan_edit is not None:
+        if args.tls_cert is None or args.tls_key is None:
+            parser.error("Для --lan-edit нужны --tls-cert и --tls-key.")
+        try:
+            tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            tls_context.load_cert_chain(args.tls_cert, args.tls_key)
+        except OSError as error:
+            parser.error(f"Не удалось загрузить сертификат или ключ HTTPS: {error}")
+    elif args.tls_cert is not None or args.tls_key is not None:
+        parser.error("Параметры --tls-cert и --tls-key используются с --lan-edit.")
     if args.set_admin_password:
         try:
             with warnings.catch_warnings():
@@ -843,9 +882,9 @@ def main():
         set_admin_password(args.db, password)
         print("Пароль администратора задан.")
         return
-    with create_server(args.port, args.db, args.lan_view) as server:
+    with create_server(args.port, args.db, args.lan_view, lan_edit=args.lan_edit, tls_context=tls_context) as server:
         host, port = server.server_address
-        print(f"Calendar URL: http://{host}:{port}", flush=True)
+        print(f"Calendar URL: {server.scheme}://{host}:{port}", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

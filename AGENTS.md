@@ -20,6 +20,18 @@ py -3 server.py --port 8767 --db data/teamup-import-20261126-081307/preview.sqli
 
 The default server binds to `127.0.0.1`. Use `--lan-view IP/PREFIX` on a separate port to share an existing database for viewing. It binds to the specified private IPv4 address, restricts requests to that subnet, and opens SQLite in read-only mode.
 
+Use `--lan-edit IP/PREFIX` with `--tls-cert` and `--tls-key` to share an existing database for editing over HTTPS. This mode restricts access to the selected subnet, uses the usual account permissions, and sets secure session cookies.
+
+The current pilot shares the Teamup preview at `https://192.168.1.129:8769/`:
+
+```powershell
+py -3 server.py --lan-edit 192.168.1.129/24 --port 8769 `
+  --db data/teamup-import-20261126-081307/preview.sqlite3 `
+  --tls-cert data/lan-https/booking-server.pem --tls-key data/lan-https/booking-server.key
+```
+
+The server certificate covers the LAN IP address. For this pilot, have clients trust `data/lan-https/instrument-booking-lan-ca.cer`. Share that public certificate and keep the private key on the server under the ignored `data/` directory.
+
 ## Project layout
 
 - `server.py` defines the HTTP API, SQLite schema and startup migrations, and booking validation.
@@ -44,7 +56,7 @@ The default server binds to `127.0.0.1`. Use `--lan-view IP/PREFIX` on a separat
 
 ## Teamup preview
 
-- The current preview has 297 imported bookings and 26 directory-linked staff accounts. Its import report and mappings are in `data/teamup-import-20261126-081307/`.
+- The current preview has 297 imported bookings and 26 directory-linked staff accounts. The imported bookings have no account owner, so only administrators can edit them. The import report and mappings are in `data/teamup-import-20261126-081307/`.
 - Source category mappings determine the instruments on each booking. Preserve the single booking ID for events with multiple instruments and keep unresolved participant names as text.
 - When regenerating a preview after review has started, preserve its linked accounts, changed passwords, and any review edits, or build a separate copy for comparison.
 
@@ -55,3 +67,5 @@ Run `py -3 -m py_compile server.py` after editing Python. Exercise the affected 
 For booking changes, check creation, editing, cancellation, and conflicts across resources. When changing drag behavior, try all four calendar views and verify that a conflicting move leaves the original booking in place.
 
 For account changes, verify that booking ownership survives a password change. When changing the guest prompt, check it before sign-in, after sign-in and sign-out, and in LAN view mode. For schema changes, start the server against a copy of an existing database and verify the bookings after restart.
+
+For changes to LAN editing, verify the certificate and IPv4 address, sign in over HTTPS, and check booking ownership and conflict handling. Check that the HTTP viewing instance still rejects writes.
