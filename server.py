@@ -160,9 +160,11 @@ class Sessions:
         if account.is_admin:
             credentials = admin_credentials(db)
         else:
-            credentials = db.execute("SELECT salt FROM users WHERE id = ?", (account.user_id,)).fetchone()
+            credentials = db.execute("SELECT salt, employee_id FROM users WHERE id = ?", (account.user_id,)).fetchone()
         if credentials is None or credentials["salt"] != salt:
             return None
+        if not account.is_admin and account.employee_id != credentials["employee_id"]:
+            return Account(account.user_id, account.username, credentials["employee_id"])
         return account
 
     def recent_attempts(self, action, limit, now):
@@ -257,23 +259,36 @@ def admin_credentials(db):
     return db.execute("SELECT salt, password_hash FROM admin_credentials WHERE id = 1").fetchone()
 
 
-def can_edit_booking(account, owner_id):
+def is_booking_owner_or_admin(account, owner_id):
     return account is not None and (account.is_admin or account.user_id == owner_id)
 
 
-def require_booking_editor(db, booking_id, account):
-    row = db.execute("SELECT owner_id, start, end, all_day FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+def is_group_participant(account, employee_ids, person):
+    return (account is not None and account.employee_id in employee_ids
+            and (len(employee_ids) > 1 or bool(person.strip())))
+
+
+def require_booking_access(db, booking_id, account):
+    row = db.execute("SELECT owner_id, start, end, all_day, person FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     if row is None:
         raise ApiError(404, "Эта бронь уже удалена.")
-    if not can_edit_booking(account, row["owner_id"]):
-        raise ApiError(403, "Изменить или отменить эту бронь может её автор или администратор.")
-    return row
+    if is_booking_owner_or_admin(account, row["owner_id"]):
+        return row
+    employee_ids = [entry[0] for entry in db.execute(
+        "SELECT employee_id FROM booking_employees WHERE booking_id = ?", (booking_id,),
+    )]
+    if is_group_participant(account, employee_ids, row["person"]):
+        return row
+    raise ApiError(403, "Изменить или отменить эту бронь может её владелец, указанный участник групповой брони или администратор.")
 
 
-def public_booking(row, account, **fields):
-    booking = dict(row, **fields)
+def public_booking(row, account, employee_ids, **fields):
+    booking = dict(row, employee_ids=employee_ids, **fields)
     owner_id = booking.pop("owner_id")
-    booking["can_edit"] = can_edit_booking(account, owner_id)
+    booking["can_edit"] = (
+        is_booking_owner_or_admin(account, owner_id) or is_group_participant(account, employee_ids, booking["person"])
+    )
+    booking["can_cancel"] = booking["can_edit"]
     booking["has_owner"] = owner_id is not None
     booking["all_day"] = bool(booking["all_day"])
     return booking
@@ -329,10 +344,11 @@ def in_period(db, params, account=None):
     )
     result = []
     for row in rows:
-        entry = public_booking(row, account)
+        employees = row["employees"]
+        employee_ids = [int(item) for item in employees.split(",")] if employees else []
+        entry = public_booking(row, account, employee_ids)
         entry["instrument_ids"] = [int(item) for item in entry.pop("instruments").split(",")]
-        employees = entry.pop("employees")
-        entry["employee_ids"] = [int(item) for item in employees.split(",")] if employees else []
+        entry.pop("employees")
         bindings = entry.pop("bindings")
         entry["resonators"] = {}
         if bindings:
@@ -464,7 +480,7 @@ def check_instrument_conflicts(db, instrument_ids, start, end, booking_id):
 
 def move_booking(db, data, booking_id, account):
     db.execute("BEGIN IMMEDIATE")
-    current = require_booking_editor(db, booking_id, account)
+    current = require_booking_access(db, booking_id, account)
     if (data.get("previous_start"), data.get("previous_end")) != (current["start"], current["end"]):
         raise ApiError(409, "Время брони уже изменилось. Перетащите её снова.")
     start = booking_time(data, "start", "Начало")
@@ -493,7 +509,7 @@ def save_booking(db, data, booking_id=None, *, account=None):
     # Keep authorization, overlap checks, and the write in one transaction.
     db.execute("BEGIN IMMEDIATE")
     if booking_id is not None:
-        require_booking_editor(db, booking_id, account)
+        require_booking_access(db, booking_id, account)
     instrument_ids = selected_ids(data.get("instrument_ids", [data.get("instrument_id")]), "Выберите приборы.")
     if not instrument_ids:
         raise ApiError(400, "Выберите хотя бы один прибор.")
@@ -550,7 +566,7 @@ def save_booking(db, data, booking_id=None, *, account=None):
         "INSERT INTO booking_resonators VALUES (?, ?, ?)",
         ((booking_id, int(instrument_id), resonator_id) for instrument_id, resonator_id in resonators.items()),
     )
-    return public_booking(row, account, instrument_ids=instrument_ids, employee_ids=employee_ids, resonators=resonators)
+    return public_booking(row, account, employee_ids, instrument_ids=instrument_ids, resonators=resonators)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -699,7 +715,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get("Content-Type") != "application/json":
                     raise ApiError(415, "Ожидается запрос JSON.")
                 db.execute("BEGIN IMMEDIATE")
-                require_booking_editor(db, item_id, account)
+                require_booking_access(db, item_id, account)
                 db.execute("DELETE FROM bookings WHERE id = ?", (item_id,))
                 return HTTPStatus.NO_CONTENT, None
         raise ApiError(404, "Запрошенный адрес не найден.")

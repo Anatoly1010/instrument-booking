@@ -284,11 +284,6 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
 .overview-booking.light-booking { color: #101510; }
 .overview-booking.light-booking:hover { filter: brightness(1.06); }
 .overview-booking.light-booking:focus-visible { outline-color: currentColor; }
-.overview-booking.striped-label {
-  -webkit-text-stroke: 1px #101510;
-  paint-order: stroke fill;
-  text-shadow: 0 1px 1px #101510;
-}
 .overview-count { flex: 0 0 auto; font-weight: 650; font-variant-numeric: tabular-nums; }
 .calendar [data-movable] { cursor: grab; user-select: none; }
 .calendar .dragging { cursor: grabbing; opacity: .55; }

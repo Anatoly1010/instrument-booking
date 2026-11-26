@@ -44,6 +44,7 @@ const monthFormat = new Intl.DateTimeFormat("ru", { month: "long", year: "numeri
 const shortDateFormat = new Intl.DateTimeFormat("ru", { day: "2-digit", month: "2-digit", year: "numeric" });
 const percentFormat = new Intl.NumberFormat("ru", { style: "percent", maximumFractionDigits: 2 });
 const defaultView = "rolling";
+const newElexsysColor = "#d2b53b";
 const instrumentColors = [
   "#17449a", "#a34813", "#13766e", "#8f285f", "#806000", "#5133a0",
   "#ad272d", "#406622", "#374456", "#70543f", "#156582", "#59263c",
@@ -53,7 +54,7 @@ const namedInstrumentColors = new Map([
   ["#2951b9", ["ELEXSYSOLD", "OLDELEXSYS", "THEELDERELEXSYS"]],
   ["#ca7609", ["CRYOMECH", "LIQUIFIER"]],
   ["#b586e2", ["IR", "IRVERTEX", "IRSPECTROMETER"]],
-  ["#d2b53b", ["ELEXSYSNEW", "NEWELEXSYS"]],
+  [newElexsysColor, ["ELEXSYSNEW", "NEWELEXSYS"]],
   ["#2eaa62", ["SORPTION", "SORPTIONSTATION"]],
   ["#633710", ["FEL", "EPRENDSTATIONFEL", "TREPRFEL"]],
 ].flatMap(([color, names]) => names.map((name) => [name, color])));
@@ -433,8 +434,11 @@ function renderSpan(span, week, lane, labeled) {
   item.style.gridColumn = `${first + 1} / ${last + 2}`;
   item.style.gridRow = String(lane + 1);
   const colors = booking.instrument_ids.map(instrumentColor);
-  item.style.background = stripeBackground(colors);
-  if (colors.some(lightBackground)) item.classList.add(colors.length === 1 ? "light-booking" : "striped-label");
+  const keepSolidColor = colors.length === 1 && colors[0] !== newElexsysColor;
+  if (keepSolidColor && lightBackground(colors[0])) item.classList.add("light-booking");
+  const backgroundColors = keepSolidColor ? colors : colors.map((color) =>
+    lightBackground(color) ? `color-mix(in srgb, ${color}, black 36%)` : color);
+  item.style.background = stripeBackground(backgroundColors);
   item.classList.toggle("continues-previous", booking.start < `${key}T00:00`);
   item.classList.toggle("continues-next", booking.end > `${week[last].next}T00:00`);
   item.title = [details, ...bookings.map((entry) => `${bookingPeople(entry)} · ${bookingRangeLabel(entry)}`)].join("\n");
@@ -1035,9 +1039,12 @@ function updateBookingPermissions() {
   bookingAccountAccess.hidden = !guest;
   if (readOnly) {
     const booking = state.bookings.find(({ id }) => id === state.editingId);
-    $("#booking-access-message").textContent = booking?.has_owner
-      ? "Изменить или отменить эту бронь может её автор или администратор."
-      : "Бронь без учётной записи может изменить или отменить администратор.";
+    const group = booking && (booking.employee_ids.length > 1 || (booking.employee_ids.length && booking.person.trim()));
+    $("#booking-access-message").textContent = group
+      ? "Изменить или отменить групповую бронь могут её владелец, указанные участники с привязанными учётными записями или администратор."
+      : booking?.has_owner
+        ? "Изменить или отменить эту бронь может её владелец или администратор."
+        : "Эту бронь может изменить или отменить администратор.";
   } else if (guest && !existing) {
     $("#booking-access-message").textContent = "Войдите перед сохранением, чтобы потом изменить или отменить свою бронь.";
   }
