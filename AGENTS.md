@@ -31,11 +31,14 @@ The default server binds to `127.0.0.1`. Use `--lan-view IP/PREFIX` on a separat
 - Keep existing SQLite data readable when changing the schema. Booking timestamps represent local lab time at minute precision.
 - Check all selected instruments and resonators within the same transaction as the booking write. Adjacent intervals can share an endpoint. A conflict on any resource rejects the whole booking.
 - A shared booking has one ID and keeps the same time and participants across all selected instruments. The month and four-week views use colored strips to show the resources involved.
+- Authors and administrators can drag individual bookings. Month and four-week views shift the date. Day and week views move timed bookings in 15-minute steps and shift all-day bookings by date. The move preserves duration, participants, and resources.
+- `PATCH /api/bookings/{id}` checks the previous start and end and rechecks resource conflicts before updating the booking time.
 - The calendar opens in the four-week view. Utilization counts each shared booking for every selected instrument and clips booked time to the displayed period.
 
 ## Accounts and access
 
-- Guests can view the calendar and create bookings. A signed-in user can edit or cancel bookings created under that account. Administrators can manage the catalogs and all bookings.
+- Guests can view the calendar and create bookings. A signed-in user can edit, move, or cancel bookings created under that account. Administrators can manage the catalogs and all bookings.
+- Issued staff accounts use surnames as logins. The sign-in form explains this, and the header prompts guests to sign in before booking. The prompt disappears after sign-in and stays hidden in LAN view mode.
 - A staff account linked to a directory entry preselects that employee in a new booking. Other users get a preselection when their full-name login uniquely matches a directory entry. Editing an existing booking uses its saved participant list.
 - Signed-in users can change their password from the header by providing the current password. The server saves a new salted hash, rotates the current session, and ends other sessions for the same account.
 
@@ -47,4 +50,8 @@ The default server binds to `127.0.0.1`. Use `--lan-view IP/PREFIX` on a separat
 
 ## Verify changes
 
-Run `py -3 -m py_compile server.py` after editing Python. Exercise the affected feature in a browser with a disposable database. For booking changes, check creation, editing, cancellation, and conflicts across resources. For account changes, verify that booking ownership survives a password change. For schema changes, also start the server against a copy of an existing database and verify the bookings after restart.
+Run `py -3 -m py_compile server.py` after editing Python. Exercise the affected feature in a browser with a disposable database.
+
+For booking changes, check creation, editing, cancellation, and conflicts across resources. When changing drag behavior, try all four calendar views and verify that a conflicting move leaves the original booking in place.
+
+For account changes, verify that booking ownership survives a password change. When changing the guest prompt, check it before sign-in, after sign-in and sign-out, and in LAN view mode. For schema changes, start the server against a copy of an existing database and verify the bookings after restart.

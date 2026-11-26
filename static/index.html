@@ -14,6 +14,7 @@
     <div class="brand"><span class="brand-mark" aria-hidden="true">▦</span><span>Расписание приборов</span></div>
     <div class="masthead-actions">
       <span id="view-only-label" hidden>Только просмотр</span>
+      <p id="guest-access-hint" class="guest-access-hint" hidden>Войдите перед бронированием, чтобы потом менять, переносить и отменять свои брони.</p>
       <button id="account-access" class="button" type="button" disabled>Войти</button>
       <button id="change-password" class="button" type="button" aria-haspopup="dialog" hidden>Сменить пароль</button>
       <button id="new-booking" class="button primary" type="button" disabled><span aria-hidden="true">+</span> Новая бронь</button>
@@ -89,9 +90,10 @@
         <button type="button" data-account-mode="admin" aria-pressed="false">Администратор</button>
       </div>
       <p id="admin-setup" class="selection" hidden>Задайте пароль на компьютере с сервером командой <code>py -3 server.py --set-admin-password</code> для базы расписания.</p>
-      <label id="account-username-label">Логин или фамилия и имя
-        <input name="username" autocomplete="username" required minlength="3" maxlength="100" autocapitalize="none" spellcheck="false">
+      <label id="account-username-label">Логин
+        <input name="username" autocomplete="username" aria-describedby="login-name-hint" required minlength="3" maxlength="100" autocapitalize="none" spellcheck="false">
       </label>
+      <p id="login-name-hint" class="selection">Для выданного аккаунта введите только фамилию, например Мельников.</p>
       <p id="register-name-hint" class="selection" hidden>Для автовыбора участника укажите фамилию и имя как в справочнике.</p>
       <label id="account-password-label">Пароль
         <input name="password" type="password" autocomplete="current-password" required maxlength="1024">

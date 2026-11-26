@@ -261,11 +261,12 @@ def can_edit_booking(account, owner_id):
 
 
 def require_booking_editor(db, booking_id, account):
-    row = db.execute("SELECT owner_id FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    row = db.execute("SELECT owner_id, start, end, all_day FROM bookings WHERE id = ?", (booking_id,)).fetchone()
     if row is None:
         raise ApiError(404, "Эта бронь уже удалена.")
     if not can_edit_booking(account, row["owner_id"]):
         raise ApiError(403, "Изменить или отменить эту бронь может её автор или администратор.")
+    return row
 
 
 def public_booking(row, account, **fields):
@@ -446,6 +447,42 @@ def check_resonators(db, resonators, start, end, booking_id):
         raise ApiError(409, f"На это время уже заняты резонаторы {names}.")
 
 
+def check_instrument_conflicts(db, instrument_ids, start, end, booking_id):
+    conflicts = db.execute(
+        f"""SELECT DISTINCT i.name FROM booking_instruments AS x
+            JOIN bookings AS b ON b.id = x.booking_id
+            JOIN instruments AS i ON i.id = x.instrument_id
+            WHERE x.instrument_id IN ({placeholders(instrument_ids)}) AND b.start < ? AND b.end > ? AND b.id != ?
+            ORDER BY i.name""",
+        (*instrument_ids, end, start, booking_id or 0),
+    ).fetchall()
+    if conflicts:
+        names = ", ".join(f"«{row['name']}»" for row in conflicts)
+        raise ApiError(409, f"На это время уже есть бронь для {names}.")
+
+
+def move_booking(db, data, booking_id, account):
+    db.execute("BEGIN IMMEDIATE")
+    current = require_booking_editor(db, booking_id, account)
+    if (data.get("previous_start"), data.get("previous_end")) != (current["start"], current["end"]):
+        raise ApiError(409, "Время брони уже изменилось. Перетащите её снова.")
+    start = booking_time(data, "start", "Начало")
+    if current["all_day"] and start[11:] != "00:00":
+        raise ApiError(400, "Бронь на весь день должна начинаться в полночь.")
+    duration = datetime.fromisoformat(current["end"]) - datetime.fromisoformat(current["start"])
+    try:
+        end = (datetime.fromisoformat(start) + duration).isoformat(timespec="minutes")
+    except OverflowError:
+        raise ApiError(400, "Выберите более раннюю дату, чтобы сохранить длительность брони.") from None
+    instrument_ids = [
+        row[0] for row in db.execute("SELECT instrument_id FROM booking_instruments WHERE booking_id = ?", (booking_id,))
+    ]
+    resonators = dict(db.execute("SELECT instrument_id, resonator_id FROM booking_resonators WHERE booking_id = ?", (booking_id,)))
+    check_instrument_conflicts(db, instrument_ids, start, end, booking_id)
+    check_resonators(db, resonators, start, end, booking_id)
+    db.execute("UPDATE bookings SET start = ?, end = ? WHERE id = ?", (start, end, booking_id))
+
+
 def save_booking(db, data, booking_id=None, *, account=None):
     owner_id = account.user_id if account else None
     if booking_id is None and "expected_username" in data:
@@ -483,17 +520,7 @@ def save_booking(db, data, booking_id=None, *, account=None):
         ).fetchone()[0]
         if count != len(employee_ids):
             raise ApiError(404, "Один из выбранных сотрудников не найден.")
-    conflicts = db.execute(
-        f"""SELECT DISTINCT i.name FROM booking_instruments AS x
-            JOIN bookings AS b ON b.id = x.booking_id
-            JOIN instruments AS i ON i.id = x.instrument_id
-            WHERE x.instrument_id IN ({slots}) AND b.start < ? AND b.end > ? AND b.id != ?
-            ORDER BY i.name""",
-        (*instrument_ids, end, start, booking_id or 0),
-    ).fetchall()
-    if conflicts:
-        names = ", ".join(f"«{row['name']}»" for row in conflicts)
-        raise ApiError(409, f"На это время уже есть бронь для {names}.")
+    check_instrument_conflicts(db, instrument_ids, start, end, booking_id)
     check_resonators(db, resonators, start, end, booking_id)
 
     values = instrument_ids[0], start, end, person, comment, all_day
@@ -529,7 +556,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.dispatch()
 
-    do_POST = do_PUT = do_DELETE = do_GET
+    do_POST = do_PUT = do_PATCH = do_DELETE = do_GET
 
     def dispatch(self):
         self.session_cookie = None
@@ -580,6 +607,7 @@ class Handler(BaseHTTPRequestHandler):
                 "employee_id": account.employee_id if account else None,
                 "admin_configured": not read_only and admin_credentials(db) is not None,
                 "read_only": read_only,
+                "supports_booking_move": not read_only,
             }
         if path == "/api/admin" and method == "GET":
             return 200, {"configured": not read_only and admin_credentials(db) is not None, "active": is_admin}
@@ -626,7 +654,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.set_session_cookie("", 0)
             return HTTPStatus.NO_CONTENT, None
         match = re.fullmatch(r"/api/(instruments|resonators|labs|employees|bookings)/([1-9][0-9]{0,18})", path)
-        booking_change = match and match[1] == "bookings" and method in ("PUT", "DELETE")
+        booking_change = match and match[1] == "bookings" and method in ("PUT", "PATCH", "DELETE")
         if method != "GET" and (method, path) != ("POST", "/api/bookings"):
             if booking_change and account is None:
                 raise ApiError(401, "Войдите, чтобы изменить или отменить бронь.")
@@ -655,6 +683,9 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":
                 return 201, save_booking(db, self.read_json(), account=account)
         if match and (item_id := int(match[2])) <= MAX_ID:
+            if method == "PATCH" and match[1] == "bookings":
+                move_booking(db, self.read_json(), item_id, account)
+                return HTTPStatus.NO_CONTENT, None
             if method == "PUT":
                 data = self.read_json()
                 if match[1] == "bookings":

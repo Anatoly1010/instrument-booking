@@ -56,6 +56,7 @@ h1, h2, p { margin: 0; }
 .masthead .primary:not(:disabled):hover { background: #bee2c6; }
 .masthead-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
 .masthead-actions #view-only-label { color: #d5edd9; font-size: .9rem; }
+.guest-access-hint { align-self: center; max-width: 19rem; color: #d5edd9; font-size: .875rem; line-height: 1.4; }
 .masthead-actions :is(#account-access, #change-password) { color: #f1f8f2; background: transparent; border-color: #ffffff60; }
 .masthead-actions #account-access { max-width: min(14rem, 46vw); overflow-wrap: anywhere; }
 .masthead-actions :is(#account-access, #change-password):not(:disabled):hover { background: #ffffff20; }
@@ -289,6 +290,23 @@ h1 { font-size: clamp(1.6rem, 3vw, 2.12rem); line-height: 1.15; overflow-wrap: a
   text-shadow: 0 1px 1px #101510;
 }
 .overview-count { flex: 0 0 auto; font-weight: 650; font-variant-numeric: tabular-nums; }
+.calendar [data-movable] { cursor: grab; user-select: none; }
+.calendar .dragging { cursor: grabbing; opacity: .55; }
+.calendar .drop-target { box-shadow: inset 0 0 0 2px var(--accent); }
+.calendar-day.drop-target::after {
+  content: attr(data-drop-time);
+  position: absolute;
+  top: var(--drop-position);
+  inset-inline: 3px;
+  z-index: 2;
+  padding: 1px 5px;
+  border-bottom: 2px solid var(--accent);
+  background: var(--highlight);
+  color: var(--masthead);
+  font-size: .78rem;
+  line-height: 1.25;
+  pointer-events: none;
+}
 #booking-menu {
   position: fixed;
   inset: auto;
@@ -441,6 +459,9 @@ dialog .directory-form { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; a
 }
 @media (max-width: 700px) {
   .masthead { padding: 10px 14px; min-height: 60px; }
+  .masthead:has(.guest-access-hint:not([hidden])) { flex-wrap: wrap; gap: 10px; }
+  .masthead-actions:has(.guest-access-hint:not([hidden])) { width: 100%; justify-content: flex-start; }
+  .guest-access-hint { flex-basis: 100%; max-width: none; }
   .brand { font-size: 1rem; }
   .brand-mark { width: 30px; height: 30px; }
   .workspace { display: block; padding: 14px; }

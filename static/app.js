@@ -81,6 +81,10 @@ const picker = { input: null, month: null };
 let previousBookingStart = "";
 let menuBookingId;
 let menuTrigger;
+let bookingDrag;
+let bookingDropTarget;
+let savingBookingMove = false;
+let skipBookingClick = false;
 
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -311,6 +315,7 @@ function renderEvent(booking, day, nextDay) {
   const button = element("button", end - start < 28 ? "event compact" : "event");
   button.type = "button";
   button.dataset.booking = booking.id;
+  if (state.session.supports_booking_move && booking.can_edit) button.dataset.movable = "";
   button.style.top = `${start / 14.4}%`;
   button.style.height = `${(end - start) / 14.4}%`;
   const resources = bookingResources(booking);
@@ -346,6 +351,7 @@ function renderTimeGrid(days, bookings) {
 
     const weekend = date.getDay() === 0 || date.getDay() === 6;
     const column = element("div", weekend ? "calendar-day weekend" : "calendar-day");
+    column.dataset.day = day;
     const fullDate = dayFormat.format(date);
     for (let hour = 0; hour < 24; hour += 1) {
       const slot = element("button", "slot");
@@ -442,6 +448,7 @@ function renderSpan(span, week, lane, labeled) {
   }
   if (bookings.length === 1) {
     item.dataset.booking = booking.id;
+    if (state.session.supports_booking_move && booking.can_edit) item.dataset.movable = "";
     item.setAttribute("aria-label", `${item.title}. Открыть бронь`);
   } else {
     item.append(element("span", "overview-count", String(bookings.length)));
@@ -589,6 +596,7 @@ function openUtilization() {
 }
 
 function renderCalendar(days, resetScroll) {
+  clearBookingDrag();
   const previousScroll = calendar.scrollTop;
   const previousLeft = calendar.scrollLeft;
   const bookings = state.allInstruments ? state.bookings
@@ -899,6 +907,115 @@ function canEditBooking(bookingId = state.editingId) {
     && Boolean(state.bookings.find(({ id }) => id === bookingId)?.can_edit);
 }
 
+function bookingDragPoint(event) {
+  const hit = document.elementFromPoint(event.clientX, event.clientY);
+  if (!calendar.contains(hit)) return null;
+  if (isOverview(state.view)) {
+    const week = hit.closest(".month-week");
+    const cell = Array.from(week?.querySelectorAll(".month-cell") ?? []).find((item) => {
+      const { left, right } = item.getBoundingClientRect();
+      return event.clientX >= left && event.clientX < right;
+    });
+    return cell?.dataset.day ? { target: cell, day: cell.dataset.day, minute: 0 } : null;
+  }
+  const column = hit.closest(".calendar-day");
+  if (!column) return null;
+  const { top, height } = column.getBoundingClientRect();
+  const minute = Math.max(0, Math.min(1439, (event.clientY - top) * 1440 / height));
+  return { target: column, day: column.dataset.day, minute };
+}
+
+function draggedBookingStart(point) {
+  const { booking, origin } = bookingDrag;
+  const days = Date.parse(`${point.day}T00:00Z`) - Date.parse(`${origin.day}T00:00Z`);
+  const minutes = booking.all_day ? 0 : Math.round((point.minute - origin.minute) / 15) * 15;
+  return shiftTime(booking.start, days + minutes * 60000);
+}
+
+function showBookingDrop(point, start) {
+  if (bookingDropTarget !== point?.target) {
+    bookingDropTarget?.classList.remove("drop-target");
+    bookingDropTarget?.removeAttribute("data-drop-time");
+    bookingDropTarget?.style.removeProperty("--drop-position");
+    bookingDropTarget = point?.target;
+    bookingDropTarget?.classList.add("drop-target");
+  }
+  if (!point || isOverview(state.view)) return;
+  const day = start.slice(0, 10);
+  const time = bookingDrag.booking.all_day ? "Весь день" : clock(start);
+  bookingDropTarget.dataset.dropTime = day === point.day ? time : `${shortDateFormat.format(fromKey(day))} · ${time}`;
+  bookingDropTarget.style.setProperty("--drop-position", `${point.minute / 14.4}%`);
+}
+
+function clearBookingDrag() {
+  showBookingDrop(null);
+  const drag = bookingDrag;
+  bookingDrag = null;
+  if (!drag) return;
+  drag.button.classList.remove("dragging");
+  if (drag.button.hasPointerCapture(drag.pointerId)) drag.button.releasePointerCapture(drag.pointerId);
+}
+
+calendar.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || event.pointerType === "touch") return;
+  skipBookingClick = false;
+  const button = event.target.closest("button[data-movable]");
+  if (!button || savingBookingMove) return;
+  const booking = state.bookings.find(({ id }) => id === Number(button?.dataset.booking));
+  const origin = bookingDragPoint(event);
+  if (!booking || !origin || !canEditBooking(booking.id)) return;
+  clearBookingDrag();
+  bookingDrag = { booking, button, origin, pointerId: event.pointerId, x: event.clientX, y: event.clientY, started: false };
+  button.setPointerCapture(event.pointerId);
+});
+
+calendar.addEventListener("pointermove", (event) => {
+  if (bookingDrag?.pointerId !== event.pointerId) return;
+  if (!bookingDrag.started) {
+    if (Math.hypot(event.clientX - bookingDrag.x, event.clientY - bookingDrag.y) < 6) return;
+    bookingDrag.started = true;
+    bookingDrag.button.classList.add("dragging");
+  }
+  const point = bookingDragPoint(event);
+  const start = point && draggedBookingStart(point);
+  showBookingDrop(start ? point : null, start);
+});
+
+for (const type of ["pointercancel", "lostpointercapture"]) {
+  calendar.addEventListener(type, (event) => {
+    if (bookingDrag?.pointerId === event.pointerId) clearBookingDrag();
+  });
+}
+
+calendar.addEventListener("click", (event) => {
+  if (!skipBookingClick || event.detail === 0) return;
+  skipBookingClick = false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+
+calendar.addEventListener("pointerup", async (event) => {
+  if (bookingDrag?.pointerId !== event.pointerId) return;
+  const { booking, started } = bookingDrag;
+  const point = started && bookingDragPoint(event);
+  const start = point && draggedBookingStart(point);
+  clearBookingDrag();
+  if (!started) return;
+  skipBookingClick = true;
+  if (!start || start === booking.start || !canEditBooking(booking.id)) return;
+  savingBookingMove = true;
+  setStatus();
+  try {
+    await api(`bookings/${booking.id}`, "PATCH", { start, previous_start: booking.start, previous_end: booking.end });
+    await refreshCalendar();
+  } catch (error) {
+    await refreshCalendar();
+    setStatus(error.message);
+  } finally {
+    savingBookingMove = false;
+  }
+});
+
 function updateBookingPermissions() {
   const existing = state.editingId !== null;
   const readOnly = existing && !canEditBooking();
@@ -934,6 +1051,7 @@ function updateSession(session) {
   }
   const admin = session.role === "admin";
   $("#view-only-label").hidden = !session.read_only;
+  $("#guest-access-hint").hidden = session.role !== "guest" || Boolean(session.read_only);
   accountAccess.hidden = Boolean(session.read_only);
   $("#new-booking").hidden = Boolean(session.read_only);
   accountAccess.textContent = admin ? "Выйти из режима администратора"
@@ -1112,7 +1230,7 @@ calendar.addEventListener("click", (event) => {
 });
 calendar.addEventListener("dblclick", (event) => {
   if (event.target.closest("button:not(.month-date)")) return;
-  const day = event.target.closest("[data-day]")?.dataset.day;
+  const day = event.target.closest(".month-cell[data-day]")?.dataset.day;
   if (day) openBookingForm(null, `${day}T09:00`);
 });
 
@@ -1178,9 +1296,11 @@ function setAccountMode(mode) {
   $("#admin-setup").hidden = !needsSetup;
   $("#account-username-label").hidden = admin;
   $("#account-password-label").hidden = needsSetup;
+  $("#login-name-hint").hidden = mode !== "login";
   $("#register-name-hint").hidden = !registration;
   $("#register-password-hint").hidden = !registration;
   username.disabled = admin;
+  username.setAttribute("aria-describedby", registration ? "register-name-hint" : "login-name-hint");
   password.disabled = needsSetup;
   password.autocomplete = registration ? "new-password" : "current-password";
   password.minLength = registration ? 5 : 1;
