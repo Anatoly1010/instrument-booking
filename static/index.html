@@ -12,16 +12,21 @@
 <body>
   <header class="masthead">
     <div class="brand"><span class="brand-mark" aria-hidden="true">▦</span><span>Расписание приборов</span></div>
-    <button id="new-booking" class="button primary" type="button" disabled><span aria-hidden="true">+</span> Новая бронь</button>
+    <div class="masthead-actions">
+      <span id="view-only-label" hidden>Только просмотр</span>
+      <button id="account-access" class="button" type="button" disabled>Войти</button>
+      <button id="change-password" class="button" type="button" aria-haspopup="dialog" hidden>Сменить пароль</button>
+      <button id="new-booking" class="button primary" type="button" disabled><span aria-hidden="true">+</span> Новая бронь</button>
+    </div>
   </header>
 
-  <div class="workspace">
-    <aside class="sidebar" aria-labelledby="instruments-heading">
+  <div id="workspace" class="workspace">
+    <aside id="instrument-sidebar" class="sidebar" aria-labelledby="instruments-heading">
       <h2 id="instruments-heading">Приборы</h2>
       <div id="instruments" class="instruments"></div>
-      <button id="new-instrument" class="button add-instrument" type="button"><span aria-hidden="true">+</span> Добавить прибор</button>
-      <button id="manage-directory" class="button directory-button" type="button" disabled>Лаборатории и сотрудники</button>
-      <button id="manage-resonators" class="button directory-button" type="button" disabled>Резонаторы</button>
+      <button id="new-instrument" class="button add-instrument" type="button" hidden><span aria-hidden="true">+</span> Добавить прибор</button>
+      <button id="manage-directory" class="button directory-button" type="button" hidden>Подразделения и сотрудники</button>
+      <button id="manage-resonators" class="button directory-button" type="button" hidden>Резонаторы</button>
     </aside>
 
     <main>
@@ -36,8 +41,8 @@
         <div class="view-picker" role="group" aria-label="Вид календаря">
           <button type="button" data-view="day" aria-pressed="false">День</button>
           <button type="button" data-view="week" aria-pressed="false">Неделя</button>
-          <button type="button" data-view="month" aria-pressed="true">Месяц</button>
-          <button type="button" data-view="rolling" aria-pressed="false">4 недели</button>
+          <button type="button" data-view="month" aria-pressed="false">Месяц</button>
+          <button type="button" data-view="rolling" aria-pressed="true">4 недели</button>
         </div>
       </div>
 
@@ -47,20 +52,82 @@
           <button id="today" class="button" type="button">Сегодня</button>
           <button id="next" class="button icon" type="button" aria-label="Следующий период">›</button>
         </div>
-        <input id="calendar-date" type="hidden">
-        <button class="button picker-trigger" type="button" data-pick="calendar-date" data-label="Выбрать дату" aria-haspopup="dialog">Выбрать дату</button>
+        <div class="calendar-tools">
+          <input id="calendar-date" type="hidden">
+          <button class="button picker-trigger" type="button" data-pick="calendar-date" data-label="Выбрать дату" aria-haspopup="dialog">Выбрать дату</button>
+          <button id="open-utilization" class="button" type="button" aria-haspopup="dialog" disabled>Занятость</button>
+          <button id="expand-calendar" class="button" type="button" aria-controls="instrument-sidebar" aria-expanded="true">На всю ширину</button>
+        </div>
       </div>
 
       <p id="status" class="status" role="status" hidden></p>
       <section class="empty" id="empty" hidden>
         <div class="empty-mark" aria-hidden="true">▦</div>
-        <h2>Добавьте первый прибор</h2>
-        <p>У каждого прибора будет свой календарь для бронирования времени.</p>
-        <button id="empty-add" class="button primary" type="button"><span aria-hidden="true">+</span> Добавить прибор</button>
+        <h2>Пока нет приборов</h2>
+        <p id="empty-message">Администратор может добавить приборы в расписание.</p>
+        <button id="empty-add" class="button primary" type="button" hidden><span aria-hidden="true">+</span> Добавить прибор</button>
       </section>
       <section id="calendar" class="calendar" aria-label="Сетка календаря" hidden></section>
     </main>
   </div>
+
+  <div id="booking-menu" popover role="menu" aria-label="Действия с бронью">
+    <button type="button" role="menuitem" data-booking-action="copy">Копировать</button>
+    <button type="button" role="menuitem" data-booking-action="move">Перенести</button>
+    <button type="button" role="menuitem" data-booking-action="delete">Удалить</button>
+  </div>
+
+  <dialog id="account-dialog" aria-labelledby="account-title">
+    <form id="account-form">
+      <div class="dialog-header">
+        <h2 id="account-title">Учётная запись</h2>
+        <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
+      </div>
+      <div class="view-picker account-modes" role="group" aria-label="Действие с учётной записью">
+        <button type="button" data-account-mode="login" aria-pressed="true">Вход</button>
+        <button type="button" data-account-mode="register" aria-pressed="false">Регистрация</button>
+        <button type="button" data-account-mode="admin" aria-pressed="false">Администратор</button>
+      </div>
+      <p id="admin-setup" class="selection" hidden>Задайте пароль на компьютере с сервером командой <code>py -3 server.py --set-admin-password</code> для базы расписания.</p>
+      <label id="account-username-label">Логин или фамилия и имя
+        <input name="username" autocomplete="username" required minlength="3" maxlength="100" autocapitalize="none" spellcheck="false">
+      </label>
+      <p id="register-name-hint" class="selection" hidden>Для автовыбора участника укажите фамилию и имя как в справочнике.</p>
+      <label id="account-password-label">Пароль
+        <input name="password" type="password" autocomplete="current-password" required maxlength="1024">
+      </label>
+      <p id="register-password-hint" class="selection" hidden>Пароль должен содержать не менее 5 символов.</p>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="button" data-close>Закрыть</button>
+        <button id="account-submit" class="button primary" type="submit">Войти</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="password-dialog" aria-labelledby="password-title">
+    <form id="password-form">
+      <div class="dialog-header">
+        <h2 id="password-title">Смена пароля</h2>
+        <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
+      </div>
+      <label>Текущий пароль
+        <input name="current_password" type="password" autocomplete="current-password" required maxlength="1024" autofocus>
+      </label>
+      <label>Новый пароль
+        <input name="new_password" type="password" autocomplete="new-password" required minlength="5" maxlength="1024">
+      </label>
+      <label>Повторите новый пароль
+        <input name="confirmation" type="password" autocomplete="new-password" required minlength="5" maxlength="1024">
+      </label>
+      <p class="form-error" role="alert" hidden></p>
+      <p id="password-updated" class="selection" role="status" hidden>Пароль изменён.</p>
+      <div class="dialog-actions">
+        <button type="button" class="button" data-close>Закрыть</button>
+        <button type="submit" class="button primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="instrument-dialog" aria-labelledby="instrument-dialog-title">
     <form id="instrument-form">
@@ -81,18 +148,18 @@
 
   <dialog id="directory-dialog" aria-labelledby="directory-title">
     <div class="dialog-header">
-      <h2 id="directory-title">Лаборатории и сотрудники</h2>
+      <h2 id="directory-title">Подразделения и сотрудники</h2>
       <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
     </div>
     <div class="directory-content">
-      <label>Лаборатория <select id="directory-lab"></select></label>
+      <label>Подразделение <select id="directory-lab"></select></label>
       <form id="lab-form" class="directory-form">
-        <label>Название лаборатории <input name="name" required maxlength="100"></label>
+        <label>Название подразделения <input name="name" required maxlength="100"></label>
         <button class="button" type="submit">Переименовать</button>
         <p class="form-error" role="alert" hidden></p>
       </form>
       <section class="directory-people" aria-labelledby="directory-people-title">
-        <h3 id="directory-people-title">Сотрудники лаборатории</h3>
+        <h3 id="directory-people-title">Сотрудники подразделения</h3>
         <div id="directory-employees" class="directory-employees"></div>
         <form id="employee-form" class="directory-form">
           <label>Имя сотрудника <input name="name" required maxlength="100"></label>
@@ -129,50 +196,78 @@
     <div id="day-bookings-list" class="day-bookings-list"></div>
   </dialog>
 
+  <dialog id="utilization-dialog" aria-labelledby="utilization-title">
+    <div class="dialog-header">
+      <h2 id="utilization-title">Занятость приборов</h2>
+      <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
+    </div>
+    <p id="utilization-period" class="period"></p>
+    <p class="selection">Доля забронированного времени за период. В каждом дне учитываются 24 часа.</p>
+    <table class="utilization-table">
+      <thead>
+        <tr>
+          <th scope="col">Прибор</th>
+          <th scope="col">Занято</th>
+          <th scope="col">Брони</th>
+          <th scope="col">Доля</th>
+        </tr>
+      </thead>
+      <tbody id="utilization-rows"></tbody>
+    </table>
+  </dialog>
+
   <dialog id="booking-dialog" aria-labelledby="booking-dialog-title">
     <form id="booking-form">
       <div class="dialog-header">
         <h2 id="booking-dialog-title">Новая бронь</h2>
         <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
       </div>
-      <fieldset>
+      <fieldset data-booking-fields>
         <legend>Приборы</legend>
         <div id="booking-instruments" class="choice-list instrument-choices"></div>
       </fieldset>
-      <fieldset id="booking-resonator-fields" hidden>
+      <fieldset id="booking-resonator-fields" data-booking-fields hidden>
         <legend>Резонаторы</legend>
         <div id="booking-resonators" class="choice-list resonator-choices"></div>
       </fieldset>
-      <div class="form-grid">
-        <div class="booking-date-field">
-          <span>Начало</span>
-          <input id="booking-start" name="start" type="hidden">
-          <button class="button picker-trigger" type="button" data-pick="booking-start" data-label="Начало" data-time aria-haspopup="dialog">Выбрать начало</button>
+      <fieldset id="booking-interval" data-booking-fields>
+        <legend>Дата и время</legend>
+        <div class="booking-date-row">
+          <span class="booking-date-label">Начало</span>
+          <input id="booking-start-date" type="hidden">
+          <button class="button picker-trigger" type="button" data-pick="booking-start-date" data-label="Дата начала" aria-haspopup="dialog">Дата начала</button>
+          <input class="booking-time" id="booking-start-time" type="text" inputmode="numeric" maxlength="5" placeholder="ЧЧ:ММ" aria-label="Время начала, ЧЧ:ММ" autocomplete="off" required>
         </div>
-        <div class="booking-date-field">
-          <span>Окончание</span>
-          <input id="booking-end" name="end" type="hidden">
-          <button class="button picker-trigger" type="button" data-pick="booking-end" data-label="Окончание" data-time aria-haspopup="dialog">Выбрать окончание</button>
+        <div class="booking-date-row">
+          <span class="booking-date-label">Окончание</span>
+          <input id="booking-end-date" type="hidden">
+          <button class="button picker-trigger" type="button" data-pick="booking-end-date" data-label="Дата окончания" aria-haspopup="dialog">Дата окончания</button>
+          <input class="booking-time" id="booking-end-time" type="text" inputmode="numeric" maxlength="5" placeholder="ЧЧ:ММ" aria-label="Время окончания, ЧЧ:ММ" autocomplete="off" required>
         </div>
-      </div>
-      <fieldset>
+        <label class="choice booking-all-day"><input id="booking-all-day" type="checkbox"> Весь день</label>
+      </fieldset>
+      <fieldset data-booking-fields>
         <legend>Сотрудники</legend>
-        <label>Лаборатория <select id="booking-lab"></select></label>
+        <label>Подразделение <select id="booking-lab"></select></label>
         <div id="booking-employees" class="choice-list employee-choices"></div>
         <p id="employee-selection" class="selection" aria-live="polite"></p>
       </fieldset>
       <label>Участники вручную <input name="person" maxlength="100" placeholder="Если человека нет в списке"></label>
       <label>Комментарий <textarea name="comment" maxlength="1000" rows="3"></textarea></label>
+      <div id="booking-access" class="booking-access" hidden>
+        <p id="booking-access-message" class="selection"></p>
+        <button id="booking-account-access" class="button" type="button">Войти</button>
+      </div>
       <p class="form-error" role="alert" hidden></p>
       <div class="dialog-actions">
         <button id="cancel-booking" class="button danger" type="button" hidden>Отменить бронь</button>
         <button type="button" class="button" data-close>Закрыть</button>
-        <button type="submit" class="button primary">Сохранить</button>
+        <button id="save-booking" type="submit" class="button primary">Сохранить</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="date-time-picker" aria-labelledby="picker-title">
+  <dialog id="date-picker" aria-labelledby="picker-title">
     <div class="dialog-header">
       <h2 id="picker-title">Выбрать дату</h2>
       <button class="button icon close" type="button" data-close aria-label="Закрыть">×</button>
@@ -186,15 +281,6 @@
       <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span>
     </div>
     <div id="picker-days" class="picker-days" aria-label="Дни месяца"></div>
-    <section id="picker-time-fields" class="picker-time-fields" aria-labelledby="picker-time-heading" hidden>
-      <h3 id="picker-time-heading">Время</h3>
-      <div id="picker-times" class="picker-times" aria-label="Выбрать время"></div>
-      <form id="picker-exact" class="picker-exact">
-        <label>Точное время <input id="picker-exact-time" type="text" inputmode="numeric" maxlength="5" placeholder="ЧЧ:ММ"></label>
-        <button class="button primary" type="submit">Выбрать</button>
-        <p id="picker-error" class="form-error" role="alert" hidden></p>
-      </form>
-    </section>
   </dialog>
 </body>
 </html>

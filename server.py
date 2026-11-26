@@ -1,15 +1,25 @@
 """Local equipment booking server. Uses only the Python standard library."""
 
 import argparse
+from collections import deque
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import date, datetime
+from getpass import getpass, GetPassWarning
+import hashlib
 from http import HTTPStatus
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import IPv4Address, IPv4Interface, IPv4Network
 import json
 from pathlib import Path
 import re
+import secrets
 import sqlite3
+from threading import Lock
+from time import monotonic
 from urllib.parse import parse_qs, urlsplit
+import warnings
 
 
 ROOT = Path(__file__).resolve().parent
@@ -42,7 +52,8 @@ CREATE INDEX IF NOT EXISTS bookings_by_instrument ON booking_instruments(instrum
 CREATE TABLE IF NOT EXISTS labs (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
-    name_key TEXT NOT NULL UNIQUE
+    name_key TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL DEFAULT 'lab' CHECK (kind IN ('lab', 'department'))
 );
 CREATE TABLE IF NOT EXISTS employees (
     id INTEGER PRIMARY KEY,
@@ -71,18 +82,207 @@ CREATE TABLE IF NOT EXISTS booking_resonators (
         REFERENCES booking_instruments(booking_id, instrument_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS bookings_by_resonator ON booking_resonators(resonator_id, booking_id);
+CREATE TABLE IF NOT EXISTS admin_credentials (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    salt BLOB NOT NULL,
+    password_hash BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL,
+    username_key TEXT NOT NULL UNIQUE,
+    salt BLOB NOT NULL,
+    password_hash BLOB NOT NULL,
+    employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL
+);
 """
 MAX_ID = 2**63 - 1
+SESSION_LIFETIME = 8 * 60 * 60
+PASSWORD_ITERATIONS = 600_000
 CATALOGS = {
     "instruments": ("Название прибора", "Прибор с таким названием уже есть.", "Прибор не найден."),
     "resonators": ("Название резонатора", "Резонатор с таким названием уже есть.", "Резонатор не найден."),
 }
+LAN_NETWORKS = tuple(IPv4Network(block) for block in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 
 
 class ApiError(Exception):
     def __init__(self, status, detail):
         super().__init__(detail)
         self.status = status
+
+
+def hash_password(password, salt):
+    return hashlib.pbkdf2_hmac("sha256", password, salt, PASSWORD_ITERATIONS)
+
+
+def password_bytes(password, minimum=1):
+    if isinstance(password, str) and minimum <= len(password) <= 1024:
+        try:
+            return password.encode("utf-8")
+        except UnicodeEncodeError:
+            pass
+    return None
+
+
+def new_user_password(password):
+    encoded = password_bytes(password, minimum=5)
+    if encoded is None:
+        raise ApiError(400, "Введите пароль длиной от 5 до 1024 символов.")
+    return encoded
+
+
+@dataclass(frozen=True)
+class Account:
+    user_id: int | None = None
+    username: str | None = None
+    employee_id: int | None = None
+
+    @property
+    def is_admin(self):
+        return self.user_id is None
+
+
+class Sessions:
+    def __init__(self):
+        self.lock = Lock()
+        self.sessions = {}
+        self.attempts = {action: deque() for action in ("admin", "user", "register", "password")}
+        self.dummy_salt = secrets.token_bytes(16)
+
+    def account(self, token, db):
+        with self.lock:
+            session = self.sessions.get(token)
+        if not session or session[0] <= monotonic():
+            return None
+        _, account, salt = session
+        if account.is_admin:
+            credentials = admin_credentials(db)
+        else:
+            credentials = db.execute("SELECT salt FROM users WHERE id = ?", (account.user_id,)).fetchone()
+        if credentials is None or credentials["salt"] != salt:
+            return None
+        return account
+
+    def recent_attempts(self, action, limit, now):
+        attempts = self.attempts[action]
+        while attempts and now - attempts[0] >= 60:
+            attempts.popleft()
+        if len(attempts) >= limit:
+            raise ApiError(429, "Слишком много попыток. Попробуйте через минуту.")
+        return attempts
+
+    def login(self, password, credentials, old_token, *, admin=False):
+        message = "Неверный пароль администратора." if admin else "Неверный логин или пароль."
+        encoded = password_bytes(password)
+        if encoded is None:
+            raise ApiError(401, message)
+        with self.lock:
+            now = monotonic()
+            attempts = self.recent_attempts("admin" if admin else "user", 5 if admin else 10, now)
+            salt = self.dummy_salt if credentials is None else credentials["salt"]
+            candidate = hash_password(encoded, salt)
+            if credentials is None or not secrets.compare_digest(candidate, credentials["password_hash"]):
+                attempts.append(now)
+                raise ApiError(401, message)
+            if admin:
+                attempts.clear()
+                return self.new_session(Account(), old_token, salt)
+            account = Account(credentials["id"], credentials["username"], credentials["employee_id"])
+            return self.new_session(account, old_token, salt)
+
+    def register(self, db, username, password, old_token):
+        salt = secrets.token_bytes(16)
+        with self.lock:
+            now = monotonic()
+            self.recent_attempts("register", 10, now).append(now)
+            password_hash = hash_password(password, salt)
+            cursor = db.execute(
+                """INSERT INTO users(username, username_key, salt, password_hash) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(username_key) DO NOTHING""",
+                (username, username.casefold(), salt, password_hash),
+            )
+            if cursor.rowcount == 0:
+                raise ApiError(409, "Этот логин уже занят.")
+            db.commit()
+            return self.new_session(Account(cursor.lastrowid, username), old_token, salt)
+
+    def change_password(self, db, account, token, current_password, replacement):
+        current = password_bytes(current_password)
+        if current is None:
+            raise ApiError(400, "Введите текущий пароль.")
+        with self.lock:
+            now = monotonic()
+            session = self.sessions.get(token)
+            credentials = db.execute("SELECT salt, password_hash FROM users WHERE id = ?", (account.user_id,)).fetchone()
+            if not session or session[0] <= now or credentials is None or session[2] != credentials["salt"]:
+                raise ApiError(401, "Войдите снова, чтобы сменить пароль.")
+            attempts = self.recent_attempts("password", 10, now)
+            current_hash = hash_password(current, credentials["salt"])
+            if not secrets.compare_digest(current_hash, credentials["password_hash"]):
+                attempts.append(now)
+                raise ApiError(400, "Текущий пароль указан неверно.")
+            salt = secrets.token_bytes(16)
+            updated = db.execute(
+                "UPDATE users SET salt = ?, password_hash = ? WHERE id = ? AND salt = ?",
+                (salt, hash_password(replacement, salt), account.user_id, credentials["salt"]),
+            )
+            if updated.rowcount != 1:
+                raise ApiError(401, "Войдите снова, чтобы сменить пароль.")
+            db.commit()
+            self.sessions = {
+                key: value for key, value in self.sessions.items() if value[1].user_id != account.user_id
+            }
+            return self.new_session(account, token, salt)
+
+    def new_session(self, account, old_token, salt):
+        now = monotonic()
+        self.sessions = {
+            token: session for token, session in self.sessions.items()
+            if session[0] > now and token != old_token
+        }
+        if len(self.sessions) >= 64:
+            del self.sessions[next(iter(self.sessions))]
+        token = secrets.token_urlsafe(32)
+        self.sessions[token] = (now + SESSION_LIFETIME, account, salt)
+        return token
+
+    def logout(self, token):
+        with self.lock:
+            self.sessions.pop(token, None)
+
+
+def admin_credentials(db):
+    return db.execute("SELECT salt, password_hash FROM admin_credentials WHERE id = 1").fetchone()
+
+
+def can_edit_booking(account, owner_id):
+    return account is not None and (account.is_admin or account.user_id == owner_id)
+
+
+def require_booking_editor(db, booking_id, account):
+    row = db.execute("SELECT owner_id FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    if row is None:
+        raise ApiError(404, "Эта бронь уже удалена.")
+    if not can_edit_booking(account, row["owner_id"]):
+        raise ApiError(403, "Изменить или отменить эту бронь может её автор или администратор.")
+
+
+def public_booking(row, account, **fields):
+    booking = dict(row, **fields)
+    owner_id = booking.pop("owner_id")
+    booking["can_edit"] = can_edit_booking(account, owner_id)
+    booking["has_owner"] = owner_id is not None
+    booking["all_day"] = bool(booking["all_day"])
+    return booking
+
+
+def username_from(data):
+    username = data.get("username")
+    if not isinstance(username, str):
+        return ""
+    username = " ".join(username.split())
+    return username if re.fullmatch(r"[\w. '’-]{3,100}", username) else ""
 
 
 def clean_text(data, field, label, limit, required=True):
@@ -108,7 +308,7 @@ def booking_time(data, field, label):
     raise ApiError(400, f"Укажите дату и время в поле «{label}».")
 
 
-def in_period(db, params):
+def in_period(db, params, account=None):
     try:
         first = date.fromisoformat(params["from"][0])
         last = date.fromisoformat(params["to"][0])
@@ -127,7 +327,7 @@ def in_period(db, params):
     )
     result = []
     for row in rows:
-        entry = dict(row)
+        entry = public_booking(row, account)
         entry["instrument_ids"] = [int(item) for item in entry.pop("instruments").split(",")]
         employees = entry.pop("employees")
         entry["employee_ids"] = [int(item) for item in employees.split(",")] if employees else []
@@ -164,16 +364,16 @@ def save_catalog_item(db, data, table, item_id=None):
 
 
 def rename_lab(db, data, lab_id):
-    name = clean_text(data, "name", "Название лаборатории", 100)
+    name = clean_text(data, "name", "Название подразделения", 100)
     try:
         row = db.execute(
-            "UPDATE labs SET name = ?, name_key = ? WHERE id = ? RETURNING id, name",
+            "UPDATE labs SET name = ?, name_key = ? WHERE id = ? RETURNING id, name, kind",
             (name, name.casefold(), lab_id),
         ).fetchone()
     except sqlite3.IntegrityError:
-        raise ApiError(409, "Лаборатория с таким названием уже есть.") from None
+        raise ApiError(409, "Подразделение с таким названием уже есть.") from None
     if row is None:
-        raise ApiError(404, "Лаборатория не найдена.")
+        raise ApiError(404, "Подразделение не найдено.")
     return dict(row)
 
 
@@ -184,7 +384,7 @@ def valid_id(value):
 def save_employee(db, data, employee_id=None):
     lab_id = data.get("lab_id")
     if not valid_id(lab_id) or not db.execute("SELECT 1 FROM labs WHERE id = ?", (lab_id,)).fetchone():
-        raise ApiError(404, "Лаборатория не найдена.")
+        raise ApiError(404, "Подразделение не найдено.")
     name = clean_text(data, "name", "Имя сотрудника", 100)
     values = (lab_id, name, name.casefold())
     try:
@@ -246,7 +446,16 @@ def check_resonators(db, resonators, start, end, booking_id):
         raise ApiError(409, f"На это время уже заняты резонаторы {names}.")
 
 
-def save_booking(db, data, booking_id=None):
+def save_booking(db, data, booking_id=None, *, account=None):
+    owner_id = account.user_id if account else None
+    if booking_id is None and "expected_username" in data:
+        username = account.username if account else None
+        if data["expected_username"] != username:
+            raise ApiError(401, "Сеанс изменился. Проверьте, под какой учётной записью вы вошли, и сохраните бронь снова.")
+    # Keep authorization, overlap checks, and the write in one transaction.
+    db.execute("BEGIN IMMEDIATE")
+    if booking_id is not None:
+        require_booking_editor(db, booking_id, account)
     instrument_ids = selected_ids(data.get("instrument_ids", [data.get("instrument_id")]), "Выберите приборы.")
     if not instrument_ids:
         raise ApiError(400, "Выберите хотя бы один прибор.")
@@ -254,6 +463,9 @@ def save_booking(db, data, booking_id=None):
     employee_ids = selected_ids(data.get("employee_ids", []), "Проверьте список участников.")
     start = booking_time(data, "start", "Начало")
     end = booking_time(data, "end", "Окончание")
+    all_day = data.get("all_day", False)
+    if type(all_day) is not bool or (all_day and (start[11:] != "00:00" or end[11:] != "00:00")):
+        raise ApiError(400, "Для брони на весь день укажите границы дней.")
     if end <= start:
         raise ApiError(400, "Окончание должно быть позже начала.")
     person = clean_text(data, "person", "Участники вручную", 100, required=False)
@@ -261,12 +473,6 @@ def save_booking(db, data, booking_id=None):
         raise ApiError(400, "Выберите сотрудников или укажите участников вручную.")
     comment = clean_text(data, "comment", "Комментарий", 1000, required=False)
 
-    # Hold SQLite's write lock across the overlap check and the write.
-    db.execute("BEGIN IMMEDIATE")
-    if booking_id is not None and not db.execute(
-        "SELECT 1 FROM bookings WHERE id = ?", (booking_id,),
-    ).fetchone():
-        raise ApiError(404, "Эта бронь уже удалена.")
     slots = placeholders(instrument_ids)
     count = db.execute(f"SELECT COUNT(*) FROM instruments WHERE id IN ({slots})", instrument_ids).fetchone()[0]
     if count != len(instrument_ids):
@@ -290,16 +496,16 @@ def save_booking(db, data, booking_id=None):
         raise ApiError(409, f"На это время уже есть бронь для {names}.")
     check_resonators(db, resonators, start, end, booking_id)
 
-    values = instrument_ids[0], start, end, person, comment
+    values = instrument_ids[0], start, end, person, comment, all_day
     if booking_id is None:
         row = db.execute(
-            """INSERT INTO bookings(instrument_id, start, end, person, comment)
-               VALUES (?, ?, ?, ?, ?) RETURNING *""",
-            values,
+            """INSERT INTO bookings(instrument_id, start, end, person, comment, all_day, owner_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *""",
+            (*values, owner_id),
         ).fetchone()
     else:
         row = db.execute(
-            """UPDATE bookings SET instrument_id = ?, start = ?, end = ?, person = ?, comment = ?
+            """UPDATE bookings SET instrument_id = ?, start = ?, end = ?, person = ?, comment = ?, all_day = ?
                WHERE id = ? RETURNING *""",
             (*values, booking_id),
         ).fetchone()
@@ -316,7 +522,7 @@ def save_booking(db, data, booking_id=None):
         "INSERT INTO booking_resonators VALUES (?, ?, ?)",
         ((booking_id, int(instrument_id), resonator_id) for instrument_id, resonator_id in resonators.items()),
     )
-    return dict(row, instrument_ids=instrument_ids, employee_ids=employee_ids, resonators=resonators)
+    return public_booking(row, account, instrument_ids=instrument_ids, employee_ids=employee_ids, resonators=resonators)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -326,8 +532,20 @@ class Handler(BaseHTTPRequestHandler):
     do_POST = do_PUT = do_DELETE = do_GET
 
     def dispatch(self):
-        url = urlsplit(self.path)
+        self.session_cookie = None
         try:
+            network = self.server.view_network
+            if network is not None and IPv4Address(self.client_address[0]) not in network:
+                raise ApiError(403, "Просмотр доступен из локальной подсети.")
+            host = self.headers.get("Host", "").lower()
+            if host not in self.server.allowed_hosts:
+                raise ApiError(403, "Откройте приложение по локальному адресу сервера.")
+            if network is not None and self.command != "GET":
+                raise ApiError(403, "Этот экземпляр доступен только для просмотра.")
+            origin = self.headers.get("Origin")
+            if self.command != "GET" and origin is not None and origin != f"http://{host}":
+                raise ApiError(403, "Запрос с другого сайта отклонён.")
+            url = urlsplit(self.path)
             if self.command == "GET" and url.path in ASSETS:
                 filename, content_type = ASSETS[url.path]
                 self.respond(200, (ROOT / "static" / filename).read_bytes(), content_type)
@@ -337,7 +555,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(404)
                 return
 
-            with closing(sqlite3.connect(self.server.db_path, timeout=5)) as db, db:
+            with closing(sqlite3.connect(self.server.db_uri, uri=True, timeout=5)) as db, db:
                 db.row_factory = sqlite3.Row
                 db.execute("PRAGMA foreign_keys = ON")
                 status, payload = self.api(db, url)
@@ -350,6 +568,73 @@ class Handler(BaseHTTPRequestHandler):
 
     def api(self, db, url):
         method, path = self.command, url.path
+        read_only = self.server.view_network is not None
+        token = None if read_only else self.session_token()
+        sessions = self.server.sessions
+        account = sessions.account(token, db) if token else None
+        is_admin = account is not None and account.is_admin
+        if path == "/api/session" and method == "GET":
+            return 200, {
+                "role": "admin" if is_admin else ("user" if account else "guest"),
+                "username": account.username if account else None,
+                "employee_id": account.employee_id if account else None,
+                "admin_configured": not read_only and admin_credentials(db) is not None,
+                "read_only": read_only,
+            }
+        if path == "/api/admin" and method == "GET":
+            return 200, {"configured": not read_only and admin_credentials(db) is not None, "active": is_admin}
+        if path == "/api/admin/login" and method == "POST":
+            data = self.read_json()
+            credentials = admin_credentials(db)
+            if credentials is None:
+                raise ApiError(403, "Пароль администратора ещё не задан на сервере.")
+            token = sessions.login(data.get("password"), credentials, token, admin=True)
+            self.set_session_cookie(token, SESSION_LIFETIME)
+            return HTTPStatus.NO_CONTENT, None
+        if path == "/api/login" and method == "POST":
+            data = self.read_json()
+            credentials = db.execute(
+                "SELECT id, username, salt, password_hash, employee_id FROM users WHERE username_key = ?",
+                (username_from(data).casefold(),),
+            ).fetchone()
+            token = sessions.login(data.get("password"), credentials, token)
+            self.set_session_cookie(token, SESSION_LIFETIME)
+            return HTTPStatus.NO_CONTENT, None
+        if path == "/api/register" and method == "POST":
+            data = self.read_json()
+            username = username_from(data)
+            if not username:
+                raise ApiError(400, "Введите от 3 до 100 символов. Допустимы буквы, цифры, пробелы, точки, подчёркивания, дефисы и апострофы.")
+            password = new_user_password(data.get("password"))
+            token = sessions.register(db, username, password, token)
+            self.set_session_cookie(token, SESSION_LIFETIME)
+            return HTTPStatus.NO_CONTENT, None
+        if path == "/api/password" and method == "POST":
+            if account is None:
+                raise ApiError(401, "Войдите, чтобы сменить пароль.")
+            if is_admin:
+                raise ApiError(403, "Этот способ смены пароля доступен обычным пользователям.")
+            data = self.read_json()
+            replacement = new_user_password(data.get("new_password"))
+            token = sessions.change_password(db, account, token, data.get("current_password"), replacement)
+            self.set_session_cookie(token, SESSION_LIFETIME)
+            return HTTPStatus.NO_CONTENT, None
+        if path in ("/api/logout", "/api/admin/logout") and method == "POST":
+            self.read_json()
+            if path == "/api/logout" or is_admin:
+                sessions.logout(token)
+                self.set_session_cookie("", 0)
+            return HTTPStatus.NO_CONTENT, None
+        match = re.fullmatch(r"/api/(instruments|resonators|labs|employees|bookings)/([1-9][0-9]{0,18})", path)
+        booking_change = match and match[1] == "bookings" and method in ("PUT", "DELETE")
+        if method != "GET" and (method, path) != ("POST", "/api/bookings"):
+            if booking_change and account is None:
+                raise ApiError(401, "Войдите, чтобы изменить или отменить бронь.")
+            if not booking_change and not is_admin:
+                if account is not None:
+                    raise ApiError(403, "Это действие доступно администратору.")
+                raise ApiError(401, "Войдите как администратор, чтобы выполнить это действие.")
+
         catalog = path.removeprefix("/api/")
         if catalog in CATALOGS:
             if method == "GET":
@@ -359,30 +644,44 @@ class Handler(BaseHTTPRequestHandler):
                 return 201, save_catalog_item(db, self.read_json(), catalog)
         if path == "/api/directory" and method == "GET":
             return 200, {
-                "labs": [dict(row) for row in db.execute("SELECT id, name FROM labs ORDER BY id")],
+                "labs": [dict(row) for row in db.execute("SELECT id, name, kind FROM labs ORDER BY id")],
                 "employees": [dict(row) for row in db.execute("SELECT id, lab_id, name FROM employees ORDER BY name_key, id")],
             }
         if path == "/api/employees" and method == "POST":
             return 201, save_employee(db, self.read_json())
         if path == "/api/bookings":
             if method == "GET":
-                return 200, in_period(db, parse_qs(url.query))
+                return 200, in_period(db, parse_qs(url.query), account)
             if method == "POST":
-                return 201, save_booking(db, self.read_json())
-        match = re.fullmatch(r"/api/(instruments|resonators|labs|employees|bookings)/([1-9][0-9]{0,18})", path)
+                return 201, save_booking(db, self.read_json(), account=account)
         if match and (item_id := int(match[2])) <= MAX_ID:
             if method == "PUT":
+                data = self.read_json()
+                if match[1] == "bookings":
+                    return 200, save_booking(db, data, item_id, account=account)
                 if match[1] in CATALOGS:
-                    return 200, save_catalog_item(db, self.read_json(), match[1], item_id)
-                save = {"labs": rename_lab, "employees": save_employee, "bookings": save_booking}
-                return 200, save[match[1]](db, self.read_json(), item_id)
+                    return 200, save_catalog_item(db, data, match[1], item_id)
+                save = {"labs": rename_lab, "employees": save_employee}
+                return 200, save[match[1]](db, data, item_id)
             if method == "DELETE" and match[1] == "bookings":
                 if self.headers.get("Content-Type") != "application/json":
                     raise ApiError(415, "Ожидается запрос JSON.")
-                if db.execute("DELETE FROM bookings WHERE id = ?", (item_id,)).rowcount == 0:
-                    raise ApiError(404, "Эта бронь уже удалена.")
+                db.execute("BEGIN IMMEDIATE")
+                require_booking_editor(db, item_id, account)
+                db.execute("DELETE FROM bookings WHERE id = ?", (item_id,))
                 return HTTPStatus.NO_CONTENT, None
         raise ApiError(404, "Запрошенный адрес не найден.")
+
+    def session_token(self):
+        try:
+            cookie = SimpleCookie(self.headers.get("Cookie", "")).get(self.server.session_cookie_name)
+            return cookie.value if cookie else None
+        except CookieError:
+            return None
+
+    def set_session_cookie(self, token, max_age):
+        name = self.server.session_cookie_name
+        self.session_cookie = f"{name}={token}; Max-Age={max_age}; Path=/api; HttpOnly; SameSite=Strict"
 
     def read_json(self):
         if self.headers.get_content_type() != "application/json":
@@ -406,37 +705,116 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
+        if self.session_cookie is not None:
+            self.send_header("Set-Cookie", self.session_cookie)
         if status != HTTPStatus.NO_CONTENT:
             self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
 
-def create_server(port, db_path):
+def initialize_database(db_path):
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(db_path)) as db, db:
         db.execute("PRAGMA foreign_keys = ON")
         db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
+        columns = {row[1] for row in db.execute("PRAGMA table_info(bookings)")}
+        if "all_day" not in columns:
+            db.execute("ALTER TABLE bookings ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0 CHECK (all_day IN (0, 1))")
+        if "owner_id" not in columns:
+            db.execute("ALTER TABLE bookings ADD COLUMN owner_id INTEGER REFERENCES users(id)")
+        if not any(row[1] == "employee_id" for row in db.execute("PRAGMA table_info(users)")):
+            db.execute("ALTER TABLE users ADD COLUMN employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL")
+        if not any(row[1] == "kind" for row in db.execute("PRAGMA table_info(labs)")):
+            db.execute(
+                "ALTER TABLE labs ADD COLUMN kind TEXT NOT NULL DEFAULT 'lab' CHECK (kind IN ('lab', 'department'))"
+            )
         db.execute("INSERT OR IGNORE INTO booking_instruments SELECT id, instrument_id FROM bookings")
         labs = [(number, f"Лаборатория {number}") for number in range(1, 5)]
         db.executemany(
             "INSERT OR IGNORE INTO labs(id, name, name_key) VALUES (?, ?, ?)",
             ((lab_id, name, name.casefold()) for lab_id, name in labs),
         )
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    server.db_path = db_path
+        if not db.execute("SELECT 1 FROM labs WHERE kind = 'department'").fetchone():
+            name = "Отдел ЭПР-спектроскопии"
+            db.execute(
+                """INSERT INTO labs(name, name_key, kind) VALUES (?, ?, 'department')
+                   ON CONFLICT(name_key) DO UPDATE SET kind = excluded.kind""",
+                (name, name.casefold()),
+            )
+
+
+def lan_interface(value):
+    try:
+        interface = IPv4Interface(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("Укажите локальный IPv4 с префиксом, например 192.168.1.10/24.") from None
+    if "/" not in value or not any(interface.network.subnet_of(network) for network in LAN_NETWORKS):
+        raise argparse.ArgumentTypeError("Укажите частный IPv4 и префикс локальной подсети, например 192.168.1.10/24.")
+    return interface
+
+
+def create_server(port, db_path, lan_view=None):
+    db_path = Path(db_path).resolve()
+    if lan_view is None:
+        initialize_database(db_path)
+    elif not db_path.is_file():
+        raise FileNotFoundError(f"База данных не найдена: {db_path}")
+    host = str(lan_view.ip) if lan_view is not None else "127.0.0.1"
+    server = ThreadingHTTPServer((host, port), Handler)
+    server.view_network = lan_view.network if lan_view is not None else None
+    mode = "ro" if lan_view is not None else "rw"
+    server.db_uri = f"{db_path.as_uri()}?mode={mode}"
+    server.sessions = Sessions()
+    server.session_cookie_name = f"booking_session_{server.server_port}"
+    suffix = "" if server.server_port == 80 else f":{server.server_port}"
+    server.allowed_hosts = {f"{host}{suffix}"}
+    if lan_view is None:
+        server.allowed_hosts.add(f"localhost{suffix}")
     return server
+
+
+def set_admin_password(db_path, password):
+    salt = secrets.token_bytes(16)
+    password_hash = hash_password(password.encode("utf-8"), salt)
+    initialize_database(db_path)
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute(
+            """INSERT INTO admin_credentials VALUES (1, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET salt = excluded.salt, password_hash = excluded.password_hash""",
+            (salt, password_hash),
+        )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--db", type=Path, default=ROOT / "data" / "schedule.sqlite3")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--set-admin-password", action="store_true", help="set or replace the local administrator password")
+    mode.add_argument("--lan-view", type=lan_interface, metavar="IP/PREFIX", help="serve an existing database read-only on a private IPv4 subnet")
     args = parser.parse_args()
-    with create_server(args.port, args.db) as server:
-        print(f"Local URL: http://127.0.0.1:{server.server_port}", flush=True)
+    if args.set_admin_password:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", GetPassWarning)
+                password = getpass("Новый пароль администратора: ")
+                if not 12 <= len(password) <= 1024:
+                    parser.error("Пароль должен содержать от 12 до 1024 символов.")
+                if password != getpass("Повторите пароль: "):
+                    parser.error("Пароли не совпадают.")
+        except (EOFError, GetPassWarning):
+            parser.error("Введите пароль в интерактивном терминале.")
+        set_admin_password(args.db, password)
+        print("Пароль администратора задан.")
+        return
+    with create_server(args.port, args.db, args.lan_view) as server:
+        host, port = server.server_address
+        print(f"Calendar URL: http://{host}:{port}", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
